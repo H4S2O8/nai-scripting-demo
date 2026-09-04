@@ -20,6 +20,7 @@ import {
   Text,
   TextField,
   VStack,
+  useEffect,
   useState,
 } from "scripting"
 
@@ -97,6 +98,7 @@ function TokenChip({
 export function PromptEditor({
   title,
   scope,
+  editorKey,
   value,
   chunks,
   onChanged,
@@ -105,6 +107,16 @@ export function PromptEditor({
   title: string
   /** Storage scope for the chunk picker's collapsed categories. */
   scope: string
+  /**
+   * Changes on every open, and whenever the target changes.
+   *
+   * The editor is the content of a fullScreenCover, which is not torn down
+   * between presentations, so `useState(value)` keeps whatever the *previous*
+   * open left behind: opening 人物 right after 艺术风格 showed the style text
+   * and then saved it over the character block. State is reset from this key
+   * rather than trusting a remount.
+   */
+  editorKey: string
   value: string
   chunks: Chunk[]
   onChanged: (value: string) => void
@@ -114,6 +126,13 @@ export function PromptEditor({
   const [raw, setRaw] = useState(false)
   const [rawText, setRawText] = useState("")
   const [entry, setEntry] = useState("")
+
+  useEffect(() => {
+    setDraft(value)
+    setRaw(false)
+    setRawText("")
+    setEntry("")
+  }, [editorKey])
 
   const tokens = parsePrompt(draft)
   const chunkCount = tokens.filter((token) => token.kind === "chunk").length

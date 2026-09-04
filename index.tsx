@@ -73,19 +73,27 @@ const TAB_CHUNKS = 4
 function targetSpec(target: EditTarget, params: GenerateParams) {
   switch (target.kind) {
     case "style":
-      return { title: "艺术风格", scope: "style", value: params.stylePrompt }
+      return { title: "艺术风格", scope: "style", id: "style", value: params.stylePrompt }
     case "character":
-      return { title: "人物", scope: "character", value: params.characterPrompt }
+      return {
+        title: "人物",
+        scope: "character",
+        id: "character",
+        value: params.characterPrompt,
+      }
     case "specific":
-      return { title: "特定提示词", scope: "specific", value: params.prompt }
+      return { title: "特定提示词", scope: "specific", id: "specific", value: params.prompt }
     case "negative":
-      return { title: "负面提示词", scope: "negative", value: params.negative }
+      return { title: "负面提示词", scope: "negative", id: "negative", value: params.negative }
     default: {
       const character = (params.characters ?? [])[target.index]
       const isPrompt = target.field === "prompt"
       return {
         title: `角色 ${target.index + 1}${isPrompt ? "" : " · 负面"}`,
+        // Scope is shared across characters on purpose — the collapsed
+        // categories that suit one character suit the next. The id is not.
         scope: isPrompt ? "charprompt" : "charnegative",
+        id: `char:${target.index}:${target.field}`,
         value: character ? (isPrompt ? character.prompt : character.negative) : "",
       }
     }
@@ -109,6 +117,9 @@ function MainView() {
   const [accountOpen, setAccountOpen] = useState(false)
   const [viewerOpen, setViewerOpen] = useState(false)
   const [editing, setEditing] = useState<EditTarget | null>(null)
+  // Bumped on every open so the editor resets even when reopening the same
+  // field — otherwise a cancelled edit would come back on the next open.
+  const [editSession, setEditSession] = useState(0)
 
   const [toastText, setToastText] = useState("")
   const [toastOn, setToastOn] = useState(false)
@@ -156,6 +167,7 @@ function MainView() {
       return
     }
     if (!params.prompt.trim() && !params.stylePrompt.trim() && !params.characterPrompt.trim()) {
+      setEditSession((session) => session + 1)
       setEditing({ kind: "specific" })
       toast("提示词不能为空")
       return
@@ -243,7 +255,10 @@ function MainView() {
     generate: () => {
       if (!busy) void generate()
     },
-    editPrompt: setEditing,
+    editPrompt: (target) => {
+      setEditSession((session) => session + 1)
+      setEditing(target)
+    },
     addCharacter: () => {
       const limit = maxCharacterPrompts(params.model)
       const list = (params.characters ?? []).slice()
@@ -257,6 +272,7 @@ function MainView() {
       }
       list.push({ prompt: "", negative: "", useCoords: false, x: 0.5, y: 0.5 })
       patch({ characters: list })
+      setEditSession((session) => session + 1)
       setEditing({ kind: "char", index: list.length - 1, field: "prompt" })
     },
     removeCharacter: (index) => {
@@ -310,8 +326,10 @@ function MainView() {
         },
         content: editing ? (
           <PromptEditor
+            key={targetSpec(editing, params).id + "#" + editSession}
             title={targetSpec(editing, params).title}
             scope={targetSpec(editing, params).scope}
+            editorKey={targetSpec(editing, params).id + "#" + editSession}
             value={targetSpec(editing, params).value}
             chunks={chunks}
             onChanged={(value) => writeTarget(editing, value)}

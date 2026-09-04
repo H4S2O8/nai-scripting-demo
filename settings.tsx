@@ -13,6 +13,7 @@ import {
   Spacer,
   Text,
   VStack,
+  useEffect,
   useState,
 } from "scripting"
 
@@ -42,6 +43,12 @@ export function AccountSheet({
   onClose: () => void
 }) {
   const [draft, setDraft] = useState(token)
+
+  // The sheet's content is not rebuilt between presentations, so the draft has
+  // to follow the saved token rather than only being seeded once.
+  useEffect(() => {
+    setDraft(token)
+  }, [token])
   const [status, setStatus] = useState("Token 存在本机 Keychain，不写进脚本文件。")
   const [busy, setBusy] = useState(false)
 

@@ -14,6 +14,7 @@ import {
   Text,
   TextField,
   VStack,
+  useEffect,
   useState,
 } from "scripting"
 
@@ -53,6 +54,14 @@ export function ParamsTab({ wb }: { wb: Workbench }) {
   // Committed on blur, not per keystroke — snapping mid-edit fights the user.
   const [widthText, setWidthText] = useState(String(params.width))
   const [heightText, setHeightText] = useState(String(params.height))
+
+  // This tab stays mounted, so the fields would keep showing the old numbers
+  // after a size preset or 复用参数 changed them somewhere else. Typing is
+  // unaffected: nothing patches until blur, and blur commits the same value.
+  useEffect(() => {
+    setWidthText(String(params.width))
+    setHeightText(String(params.height))
+  }, [params.width, params.height])
 
   const applySize = (width: number, height: number) => {
     const fitted = fitSize(width, height)

@@ -98,6 +98,21 @@ NovelAI 的 PNG 没有日期字段，`Photos.savePhoto` 拿到这样的容器会
 不直接改归档原图：`ImageIO` 重新编码是否原样搬运 PNG 的 tEXt 块没验证过，而
 NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传——日期错了总比存不进去好。
 
+## sheet / fullScreenCover 的内容不会在两次呈现之间重建
+
+实测踩到：`useState(value)` 只在首次挂载取初值，而模态内容的组件在关闭后并没有被
+拆掉。于是打开「艺术风格」编辑、关闭、再打开「人物」，编辑器里还是上一次的草稿——
+点完成就把艺术风格的内容写进了人物块。**这是会改坏用户数据的一类 bug，不只是显示错。**
+
+不要指望「换了 target 就会重新挂载」。凡是从 prop 取初值的 state，都要显式重置：
+
+- `PromptEditor`：`editorKey`（target id + 每次打开自增的计数）驱动 `useEffect` 重置，
+  计数保证「取消编辑后再打开同一个字段」也是干净的
+- `AccountSheet`：draft 跟随 token
+- `ParamsTab`：宽高输入框跟随 params（这个 tab 常驻，复用参数改了尺寸它不会自己更新）
+
+排查同类问题的方法：grep `useState(<某个 prop>)`。
+
 ## 提示词里的 chunk 引用为什么内联在字符串里
 
 chunk 放进提示词要保持成一枚标签，那提示词就得携带这个引用。两条路：
