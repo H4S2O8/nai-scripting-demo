@@ -9,6 +9,7 @@ import {
   Button,
   HStack,
   Image,
+  Menu,
   RoundedRectangle,
   Slider,
   Spacer,
@@ -19,6 +20,7 @@ import {
 
 import {
   ACCENT,
+  ACCENT_GRADIENT,
   CARD_BG,
   CARD_STROKE,
   CHIP_BG,
@@ -257,5 +259,145 @@ export function StatPill({
         {value}
       </Text>
     </HStack>
+  )
+}
+
+/** A tappable row that opens a menu — used for model / sampler / schedule. */
+export function MenuField({
+  value,
+  options,
+  onChanged,
+}: {
+  value: string
+  options: { id: string; label: string; note?: string }[]
+  onChanged: (id: string) => void
+}) {
+  const current = options.find((item) => item.id === value)
+  return (
+    <Menu
+      label={
+        <HStack
+          spacing={8}
+          padding={{ horizontal: 12, vertical: 10 }}
+          frame={{ maxWidth: "infinity" }}
+          background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
+        >
+          <Text font={14} fontWeight="medium" foregroundStyle="label">
+            {current ? current.label : value}
+          </Text>
+          {current && current.note ? (
+            <Text font={12} foregroundStyle="tertiaryLabel">
+              {current.note}
+            </Text>
+          ) : null}
+          <Spacer />
+          <Image systemName="chevron.up.chevron.down" font={11} foregroundStyle={ACCENT} />
+        </HStack>
+      }
+    >
+      {options.map((item) => (
+        <Button
+          key={item.id}
+          title={item.note ? `${item.label} · ${item.note}` : item.label}
+          action={() => onChanged(item.id)}
+        />
+      ))}
+    </Menu>
+  )
+}
+
+/** Icon-only button for dense control rows. */
+export function IconButton({
+  systemImage,
+  title,
+  onTap,
+  active,
+  disabled,
+}: {
+  systemImage: string
+  title: string
+  onTap: () => void
+  active?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <Button
+      buttonStyle="plain"
+      disabled={disabled === true}
+      action={() => {
+        if (disabled !== true) onTap()
+      }}
+    >
+      <HStack
+        spacing={5}
+        padding={{ horizontal: 11, vertical: 8 }}
+        background={
+          <RoundedRectangle
+            cornerRadius={RADIUS_CHIP}
+            fill={active === true ? CHIP_ON_BG : CHIP_BG}
+          />
+        }
+      >
+        <Image
+          systemName={systemImage}
+          font={12}
+          foregroundStyle={
+            disabled === true ? "tertiaryLabel" : active === true ? CHIP_ON_FG : ACCENT
+          }
+        />
+        <Text
+          font={12}
+          fontWeight={active === true ? "semibold" : "regular"}
+          foregroundStyle={
+            disabled === true ? "tertiaryLabel" : active === true ? CHIP_ON_FG : "label"
+          }
+        >
+          {title}
+        </Text>
+      </HStack>
+    </Button>
+  )
+}
+
+/** Full-width primary action, used for the generate button. */
+export function PrimaryButton({
+  title,
+  systemImage,
+  onTap,
+  disabled,
+  leading,
+}: {
+  title: string
+  systemImage?: string
+  onTap: () => void
+  disabled?: boolean
+  leading?: any
+}) {
+  return (
+    <Button
+      buttonStyle="plain"
+      disabled={disabled === true}
+      action={() => {
+        if (disabled !== true) onTap()
+      }}
+    >
+      <HStack
+        spacing={8}
+        padding={{ vertical: 14 }}
+        frame={{ maxWidth: "infinity" }}
+        background={<RoundedRectangle cornerRadius={16} fill={ACCENT_GRADIENT} />}
+        opacity={disabled === true ? 0.6 : 1}
+      >
+        <Spacer />
+        {leading}
+        {systemImage && !leading ? (
+          <Image systemName={systemImage} font={15} foregroundStyle="white" />
+        ) : null}
+        <Text font={16} fontWeight="semibold" foregroundStyle="white">
+          {title}
+        </Text>
+        <Spacer />
+      </HStack>
+    </Button>
   )
 }

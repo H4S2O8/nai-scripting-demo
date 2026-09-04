@@ -54,7 +54,8 @@ export function ChunksPage({
   onClose,
 }: {
   onInsert: (chunk: Chunk) => void
-  onClose: () => void
+  /** Only set when shown as a sheet; as a tab there is nothing to close. */
+  onClose?: () => void
 }) {
   const [syncToken, setSyncToken] = useState("")
   const [encKey, setEncKey] = useState("")
@@ -200,11 +201,13 @@ export function ChunksPage({
   return (
     <NavigationStack>
       <ScrollView
-        navigationTitle="Prompt Chunks"
+        navigationTitle="词库"
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
         scrollDismissesKeyboard="interactively"
-        toolbar={{ topBarTrailing: [<Button title="完成" action={onClose} />] }}
+        toolbar={{
+          topBarTrailing: onClose ? [<Button title="完成" action={onClose} />] : [],
+        }}
         alert={{
           title: mode === "mirror" ? "镜像会删除数据" : "推送到账户",
           isPresented: confirmPush,
@@ -371,7 +374,7 @@ export function ChunksPage({
               </VStack>
             )}
             <Text font={11} foregroundStyle="tertiaryLabel">
-              点一下把该 chunk 的内容追加到提示词。
+              点一下把该 chunk 的内容追加到提示词。管理（新建 / 改名 / 重排）请回网页做。
             </Text>
           </Card>
 
