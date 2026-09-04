@@ -34,6 +34,7 @@
  * the keystore.
  */
 import { blake2b256 } from "./blake2b"
+import { inflateAuto } from "./inflate"
 import { SECRETBOX_KEY_BYTES, secretbox, secretboxOpen } from "./nacl"
 
 const API = "https://image.novelai.net"
@@ -140,26 +141,44 @@ function randomBytes(count: number): Uint8Array {
 /* ------------------------------------------------------------- compression */
 
 /**
- * NovelAI compresses payloads with raw DEFLATE (fflate). Apple's compression
- * framework calls raw DEFLATE "zlib", so `Data.compressed("zlib")` should be
- * the same bytes — but "should be" is how this platform eats a week, so prove
- * it at runtime against a fixture produced by a real raw-DEFLATE encoder.
+ * NovelAI compresses payloads with raw DEFLATE (fflate).
+ *
+ * Reading uses the vendored decoder, not `Data.decompressed("zlib")`. Apple's
+ * compression framework documents COMPRESSION_ZLIB as raw DEFLATE, but the
+ * on-device probe said otherwise, and every existing chunk on an account is
+ * compressed — so this cannot be left to the platform.
+ *
+ * Writing compressed still needs an *encoder*, which we do not vendor (the
+ * format allows uncompressed payloads, so it is optional). Whether the
+ * platform's encoder is usable is decided by inflating its output with our own
+ * decoder — the one fuzzed against zlib — rather than by round-tripping it
+ * against itself, which would pass even for a format NovelAI cannot read.
  */
 const PROBE_PLAIN = "novelai-prompt-chunks probe"
+/** Produced by a real raw-DEFLATE encoder; proves the decoder runs correctly here. */
 const PROBE_RAW_DEFLATE_B64 = "y8svS81JzNQtKMrPLSjRTc4ozcsuVigoyk9KBQA="
 
+let decoderProbe: boolean | null = null
 let compressionProbe: boolean | null = null
 
+/** Does the vendored inflate work in this JS engine? */
+export function decoderUsable(): boolean {
+  if (decoderProbe != null) return decoderProbe
+  try {
+    decoderProbe = fromUtf8(inflateAuto(b64ToBytes(PROBE_RAW_DEFLATE_B64))) === PROBE_PLAIN
+  } catch {
+    decoderProbe = false
+  }
+  return decoderProbe
+}
+
+/** Can we *write* compressed payloads, i.e. is the platform encoder raw DEFLATE? */
 export function compressionUsable(): boolean {
   if (compressionProbe != null) return compressionProbe
   compressionProbe = false
   try {
-    // 1. The platform must read a blob a real raw-DEFLATE encoder produced.
-    const decoded = inflateRaw(b64ToBytes(PROBE_RAW_DEFLATE_B64))
-    if (fromUtf8(decoded) !== PROBE_PLAIN) return false
-    // 2. And its own output must survive the same path.
-    const round = inflateRaw(deflateRawUnchecked(utf8(PROBE_PLAIN)))
-    compressionProbe = fromUtf8(round) === PROBE_PLAIN
+    const packed = deflateRawUnchecked(utf8(PROBE_PLAIN))
+    compressionProbe = fromUtf8(inflateAuto(packed)) === PROBE_PLAIN
   } catch {
     compressionProbe = false
   }
@@ -171,14 +190,6 @@ function deflateRawUnchecked(bytes: Uint8Array): Uint8Array {
   if (data == null) throw new Error("压缩输入无效")
   const out = data.compressed("zlib").toUint8Array()
   if (!out) throw new Error("压缩失败")
-  return out
-}
-
-function inflateRaw(bytes: Uint8Array): Uint8Array {
-  const data = Data.fromUint8Array(bytes)
-  if (data == null) throw new Error("解压输入无效")
-  const out = data.decompressed("zlib").toUint8Array()
-  if (!out) throw new Error("解压失败")
   return out
 }
 
@@ -488,7 +499,7 @@ export function decodeChunk(obj: any, ks: Keystore): Chunk {
 
   let plain = secretboxOpen(box, nonce, key)
   if (!plain) throw new Error("对象 " + obj.id + " 解密失败")
-  if (compressed) plain = inflateRaw(plain)
+  if (compressed) plain = inflateAuto(plain)
 
   const chunk = JSON.parse(fromUtf8(plain)) as Chunk
   chunk.remoteId = obj.id
@@ -554,7 +565,10 @@ export function selfTestCodec(): string {
     decoded.expansion === sample.expansion &&
     decoded.id === sample.id
   if (!ok) throw new Error("chunk 编解码自检失败")
-  return compressionUsable() ? "压缩(raw deflate)" : "未压缩"
+  return (
+    `读取${decoderUsable() ? "可解压" : "解压异常"}` +
+    ` · 写入${compressionUsable() ? "压缩" : "未压缩"}`
+  )
 }
 
 /* ------------------------------------------------------------- chunk CRUD */
@@ -649,8 +663,8 @@ export function summarizeFailures(result: ListResult, ks: Keystore): string[] {
   } else if (/形状不对/.test(sample.reason)) {
     const raw = ks.keys[sample.meta]
     lines.push(`   ⚠ 密钥形状：${describeKeyShape(raw)}，期望 32 字节数组。`)
-  } else if (sample.compressed && !compressionUsable()) {
-    lines.push("   ⚠ 对象是压缩的，但本机的 raw DEFLATE 探针没通过——解压这一步用不了。")
+  } else if (sample.compressed && !decoderUsable()) {
+    lines.push("   ⚠ 对象是压缩的，但本机的 raw DEFLATE 解码自检没通过——请把这条发给作者。")
   } else {
     lines.push("   ⚠ 密钥在、形状对、解压可用，那么就是 encryption_key 不是这个账户的。")
   }
@@ -778,7 +792,8 @@ export async function pullChunks(
   log(
     `keystore：${Object.keys(ks.keys).length} 个密钥` +
       `，changeIndex=${ks.changeIndex ?? "无"}` +
-      `，压缩${compressionUsable() ? "可用" : "不可用"}`,
+      `，解压${decoderUsable() ? "可用" : "不可用"}` +
+      `，写入${compressionUsable() ? "压缩" : "未压缩"}`,
   )
   const result = await listChunks(account, ks)
   if (result.failed) {

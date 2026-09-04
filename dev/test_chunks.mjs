@@ -161,9 +161,9 @@ function refEncode(chunk, keyBytes, { compress = true } = {}) {
 
 /* ------------------------------------------------------------------ tests */
 
-console.log("compression probe")
-check("raw-DEFLATE fixture decodes", C.compressionUsable() === true)
-
+console.log("compression probes")
+check("vendored decoder works", C.decoderUsable() === true)
+check("platform encoder validated by our decoder", C.compressionUsable() === true)
 console.log("chunk codec")
 const containerId = crypto.randomUUID()
 const keyBytes = Array.from(crypto.randomBytes(32))
@@ -210,6 +210,28 @@ const encCat = C.encodeChunk({ ...category }, ks)
 const refCat = refDecode(encCat, ks.keys[category.containerId])
 check("category keeps childOrder", JSON.stringify(refCat.childOrder) === JSON.stringify(category.childOrder))
 check("category is marked", refCat.isCategory === true)
+
+{
+  // Reading must not go through Data.decompressed at all: on the real device
+  // that call is not raw DEFLATE, which is what broke every existing chunk.
+  const saved = FakeData.prototype.decompressed
+  FakeData.prototype.decompressed = function () {
+    throw new Error("platform decompress must not be used for reading")
+  }
+  const cid = crypto.randomUUID()
+  const kb = Array.from(crypto.randomBytes(32))
+  const only = { master: new Uint8Array(32), keys: { [cid]: kb }, extras: {}, dirty: false }
+  const obj = refEncode({ ...sample, containerId: cid, remoteId: "" }, kb, { compress: true })
+  let ok = false
+  try {
+    ok = C.decodeChunk({ id: "o", data: obj.data, meta: cid }, only).expansion === sample.expansion
+  } catch (e) {
+    ok = false
+  }
+  FakeData.prototype.decompressed = saved
+  check("compressed chunks decode without the platform decompressor", ok)
+}
+
 
 console.log("keystore key shapes")
 // new Uint8Array(x) fails silently for two of these, which is exactly how

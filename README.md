@@ -132,9 +132,14 @@ Scripting 的 `Crypto` 只有 SHA / HMAC / AES-GCM，没有 BLAKE2b 和 XSalsa20
 
 - `nacl.ts`：tweetnacl-js 1.0.3 的 secretbox 子集（public domain），逐字节比对过
 - `blake2b.ts`：RFC 7693 参考实现，对过官方测试向量
-- 压缩：NovelAI 用 raw DEFLATE，Apple 的 compression 框架把 raw DEFLATE 叫 "zlib"。
-  这一条**在运行时用一个真 raw-DEFLATE 编码器产出的固定样本验证**，不匹配就退回
-  写未压缩（格式本身允许），Chunks 页的「自检」按钮会告诉你走的是哪条路。
+- `inflate.ts`：raw DEFLATE 解码器（tinf 算法，zlib 许可）。**不能用平台的
+  `Data.decompressed("zlib")`**——Apple 文档说 COMPRESSION_ZLIB 就是 raw DEFLATE，
+  但真机实测不是，而账户里已有的 chunk 全是压缩的，这一步交给平台等于一个都读不了。
+  写入方向仍然可选：格式允许不压缩，所以平台编码器能不能用，是**拿我们自己的解码器
+  去验它的输出**决定的——自压自解的探针即使格式不对也会通过。
+
+`dev/test_inflate.mjs` 拿 node 的 zlib 对拷：各压缩等级、存储块、重叠回溯、
+壁纸级大输入，外加 2000 组随机负载。
 
 `dev/test_chunks.mjs` 会用 tweetnacl + node zlib 复现油猴脚本的编解码，双向对拷，
 确认线格式一致。
@@ -196,5 +201,5 @@ node dev/test_chunks.mjs # chunk / keystore 编解码与油猴脚本互导
 | 改了代码手机没变 | `script.json` 的 `version` 没加一 |
 | Chunks 报 keystore 解密失败 | `encryption_key` 不对，重新从网页会话复制 |
 | Chunks 提示 persistent access tokens not allowed | 填的是 `pst-` token，换成网页会话的 `auth_token` |
-| Chunks 全部对象无法解密 | 看日志里跟在后面的那几行——会指出是 keystore 空、密钥对不上 meta（两个凭据来自不同账户）、密钥形状异常，还是 `encryption_key` 不对 |
+| Chunks 全部对象无法解密 | 看日志里跟在后面的那几行——会指出是 keystore 空、密钥对不上 meta（两个凭据来自不同账户）、密钥形状异常，还是 `encryption_key` 不对。v2.3.0 之前是解压不了，升级即可 |
 | Chunks 拉取 401 | `auth_token` 过期了，重新复制一次 `localStorage.session` |

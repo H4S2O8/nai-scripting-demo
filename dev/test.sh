@@ -11,5 +11,8 @@ echo
 echo "== crypto vs reference implementations =="
 node dev/test_crypto.mjs
 echo
+echo "== raw DEFLATE vs node zlib =="
+node dev/test_inflate.mjs
+echo
 echo "== chunk protocol vs the userscript =="
 node dev/test_chunks.mjs
