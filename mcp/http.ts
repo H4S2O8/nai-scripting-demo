@@ -82,8 +82,15 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 /** Serve a generated PNG, so a client can show it by URL instead of base64. */
 function serveImage(name: string, res: ServerResponse) {
   // basename() is the path-traversal guard: no directory part survives it.
-  const file = join(OUTPUT_DIR, basename(decodeURIComponent(name)))
-  if (!file.endsWith(".png") || !existsSync(file)) {
+  const clean = basename(decodeURIComponent(name))
+  // Only names this server generated, so the unguessable suffix is mandatory
+  // rather than incidental.
+  if (!/^nai_\d{8}_\d{6}_\d+_[0-9a-f]{16}\.png$/.test(clean)) {
+    res.writeHead(404).end("not found")
+    return
+  }
+  const file = join(OUTPUT_DIR, clean)
+  if (!existsSync(file)) {
     res.writeHead(404).end("not found")
     return
   }
@@ -105,13 +112,17 @@ const http = createServer((req, res) => {
       return
     }
 
-    if (!authorized(req)) {
-      deny(res)
+    // Images are served without the bearer header on purpose: a chat client
+    // rendering <img> or markdown cannot attach one, so requiring it meant the
+    // picture never displayed. The filename carries 8 random bytes and the
+    // pattern below is enforced, so the URL is the capability.
+    if (url.pathname.startsWith("/images/")) {
+      serveImage(url.pathname.slice("/images/".length), res)
       return
     }
 
-    if (url.pathname.startsWith("/images/")) {
-      serveImage(url.pathname.slice("/images/".length), res)
+    if (!authorized(req)) {
+      deny(res)
       return
     }
 

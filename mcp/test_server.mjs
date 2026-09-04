@@ -153,7 +153,10 @@ console.log("http transport")
   const SECRET = "test-secret-not-a-real-one"
   const PORT = 8791 + (process.pid % 100)
   const outDir = mkdtempSync(join(tmpdir(), "nai-mcp-http-"))
-  writeFileSync(join(outDir, "sample.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  // Only names this server would have generated are served; the 16 hex chars
+  // are the capability that replaces the bearer header on this route.
+  const IMG = "nai_20260905_031500_12345_0123456789abcdef.png"
+  writeFileSync(join(outDir, IMG), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
 
   // An endpoint that spends Anlas must not be startable without a secret.
   const naked = spawn("node", [join(here, "dist/http.mjs")], {
@@ -204,15 +207,26 @@ console.log("http transport")
       headers: { authorization: "Bearer " + "x".repeat(SECRET.length) },
     })).status === 401,
   )
-  check("images need auth too", (await fetch(base + "/images/sample.png")).status === 401)
+  // Deliberately unauthenticated: a chat client rendering the picture cannot
+  // attach an Authorization header, so requiring one meant it never displayed.
+  const anon = await fetch(base + "/images/" + IMG)
+  check("images are served without a bearer header", anon.status === 200 && anon.headers.get("content-type") === "image/png")
+  check(
+    "a name without the random suffix is refused",
+    (await fetch(base + "/images/sample.png")).status === 404,
+  )
+  check(
+    "a plausible but wrong suffix is refused",
+    (await fetch(base + "/images/nai_20260905_031500_12345_deadbeef.png")).status === 404,
+  )
 
   const authed = { headers: { authorization: "Bearer " + SECRET } }
-  const image = await fetch(base + "/images/sample.png", authed)
-  check("an authorised image request is served", image.status === 200 && image.headers.get("content-type") === "image/png")
+  const image = await fetch(base + "/images/" + IMG, authed)
+  check("a bearer header is still accepted", image.status === 200)
   // basename() strips any directory part, so traversal cannot escape the folder.
   check(
     "path traversal is refused",
-    (await fetch(base + "/images/..%2F..%2F..%2Fetc%2Fpasswd", authed)).status === 404,
+    (await fetch(base + "/images/..%2F..%2F..%2Fetc%2Fpasswd")).status === 404,
   )
   check("unknown paths 404", (await fetch(base + "/nope", authed)).status === 404)
 

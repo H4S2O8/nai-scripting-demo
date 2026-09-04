@@ -14,7 +14,9 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -58,6 +60,30 @@ function outputDir(): string {
 
 function stamp(): string {
   return new Date().toISOString().replace(/[-:]/g, "").replace("T", "_").slice(0, 15)
+}
+
+/**
+ * Downscaled JPEG for inlining, or null when ffmpeg is unavailable.
+ *
+ * A full-size PNG is ~1.7MB, ~2.3MB once base64'd, and a phone on a mobile
+ * link times out pulling that through the tunnel — measured, not guessed. A
+ * 512px JPEG is a few tens of KB and renders immediately; the untouched
+ * original stays one URL away.
+ */
+function preview(pngPath: string): Buffer | null {
+  const out = pngPath.replace(/\.png$/, ".preview.jpg")
+  try {
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-loglevel", "error", "-i", pngPath, "-vf", "scale=512:-2", "-q:v", "5", out],
+      { stdio: ["ignore", "ignore", "pipe"], timeout: 30_000 },
+    )
+    const data = readFileSync(out)
+    rmSync(out, { force: true })
+    return data
+  } catch {
+    return null
+  }
 }
 
 async function readError(response: Response): Promise<string> {
@@ -114,7 +140,10 @@ async function generateOne(params: GenerateParams, seed: number) {
             throw new Error(body.toString("utf8").slice(0, 200) || "响应既不是 ZIP 也不是 PNG")
           })()
 
-  const path = join(outputDir(), `nai_${stamp()}_${actualSeed}.png`)
+  // The random suffix is a capability: /images/ is unauthenticated so that a
+  // chat client can actually render the picture, and an unguessable name is
+  // what keeps it private.
+  const path = join(outputDir(), `nai_${stamp()}_${actualSeed}_${randomBytes(8).toString("hex")}.png`)
   writeFileSync(path, png)
   return { path, seed: actualSeed, bytes: png.length, png }
 }
@@ -224,12 +253,14 @@ export function buildServer(): McpServer {
 
       const results: { path: string; seed: number }[] = []
       let lastPng: Buffer | null = null
+    let lastPath = ""
       try {
         for (let i = 0; i < (args.count ?? 1); i++) {
           const seed = params.seed > 0 ? params.seed : rollSeed()
           const made = await generateOne(params, seed)
           results.push({ path: made.path, seed: made.seed })
           lastPng = made.png
+        lastPath = made.path
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -264,8 +295,15 @@ export function buildServer(): McpServer {
 
       const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] =
         [{ type: "text", text: summary }]
-      if ((args.returnImage ?? inlineByDefault()) && lastPng) {
-        content.push({ type: "image", data: lastPng.toString("base64"), mimeType: "image/png" })
+      if ((args.returnImage ?? inlineByDefault()) && lastPath) {
+        const small = preview(lastPath)
+        if (small) {
+          content.push({ type: "image", data: small.toString("base64"), mimeType: "image/jpeg" })
+        } else if (lastPng) {
+          // No ffmpeg: send the original rather than nothing, and accept that a
+          // slow link may struggle with 2MB of base64.
+          content.push({ type: "image", data: lastPng.toString("base64"), mimeType: "image/png" })
+        }
       }
       return { content }
     },
