@@ -140,18 +140,32 @@ sudo chown -R root:root /opt/novelai-mcp
 和你的每一条提示词都是明文过网。
 
 **Cloudflare Tunnel（推荐，尤其是国内服务器）** —— 边缘终止 HTTPS，源站一个端口都不用开，
-也不用为 80/443 备案。如果隧道是「令牌式」的（进程带 `--token`、机器上没有 config.yml），
-就在 Zero Trust 后台 → Networks → Tunnels → 你的隧道 → Public Hostname 里加一条：
+也不用为 80/443 备案。Zero Trust 后台 → Networks → Tunnels → 你的隧道 → Public Hostname
+加一条，DNS 记录 Cloudflare 会自动建：
 
-| 字段 | 值 |
-| --- | --- |
-| Subdomain | `nai` |
-| Domain | 你的域名 |
-| Service | `HTTP` → `localhost:8787` |
+| 字段 | 隧道直连 8787 | 复用已有的 nginx |
+| --- | --- | --- |
+| Subdomain | `nai` | `nai` |
+| Service | `HTTP` → `localhost:8787` | `HTTP` → `localhost:80` |
+| 还需要 | 无 | 装 `nginx-vhost.conf` |
 
-DNS 记录 Cloudflare 会自动建。**注意超时**：Cloudflare 对源站有 100 秒的响应超时（524）。
-MCP 的 Streamable HTTP 用 SSE，响应头在收到请求时就发出去了，长时间的生成不受影响；但如果
-真的撞到 524，把 `count` 调小（一次一张）最直接。
+如果隧道已经指向 80、上面还挂着别的站点，走右边那列更省事——后台里和现有条目填一样的
+service，路由交给 nginx 按 Host 分。`nginx-vhost.conf` 就是为此准备的：
+
+```bash
+sudo cp mcp/nginx-vhost.conf /etc/nginx/sites-available/novelai-mcp
+sudo sed -i 's/nai\.asylum\.icu/你的域名/' /etc/nginx/sites-available/novelai-mcp
+sudo ln -sf /etc/nginx/sites-available/novelai-mcp /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**这个 vhost 必须写精确的 `server_name`。**很多机器上已有的站点是 `server_name _;`，
+它排在前面就成了 80 端口的默认 server，会把没有精确匹配的 Host 全部吃掉——现象是你的请求
+落到了别的服务上，返回一个看着莫名其妙的 404。
+
+**关于超时**：Cloudflare 对源站有 100 秒响应超时（524）。实测确认 MCP 的 Streamable HTTP
+以 `Content-Type: text/event-stream` 立刻返回响应头，所以几十秒的生成不会触发它；nginx 那边
+也必须 `proxy_buffering off`，否则事件流会被缓冲到生成结束才吐出来，白白制造这个问题。
 
 **Caddy（自己有公网端口时）**：
 
