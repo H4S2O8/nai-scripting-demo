@@ -33,6 +33,7 @@
  * encryption_key never leaves the device, it is only hashed locally to open
  * the keystore.
  */
+import { activeAccount, activeId } from "./accounts"
 import { blake2b256 } from "./blake2b"
 import { inflateAuto } from "./inflate"
 import { SECRETBOX_KEY_BYTES, secretbox, secretboxOpen } from "./nacl"
@@ -202,56 +203,19 @@ function hasMagic(bytes: Uint8Array): boolean {
 
 /* ---------------------------------------------------------------- accounts */
 
+/**
+ * The sync credentials of whichever account is active.
+ *
+ * These used to be standalone Keychain entries. They belong to an account, and
+ * an auth_token paired with another account's encryption_key opens nothing —
+ * which looks identical to a broken client, so it is worth making impossible.
+ */
 export function loadSyncToken(): string {
-  return (Keychain.get(SYNC_TOKEN_KEY) ?? "").trim()
-}
-
-export function saveSyncToken(token: string): boolean {
-  const value = token.trim()
-  if (!value) {
-    Keychain.remove(SYNC_TOKEN_KEY)
-    return true
-  }
-  return Keychain.set(SYNC_TOKEN_KEY, value)
+  return (activeAccount()?.syncToken ?? "").trim()
 }
 
 export function loadEncryptionKey(): string {
-  return (Keychain.get(ENC_KEY_KEY) ?? "").trim()
-}
-
-export function saveEncryptionKey(key: string): boolean {
-  const value = key.trim()
-  if (!value) {
-    Keychain.remove(ENC_KEY_KEY)
-    return true
-  }
-  return Keychain.set(ENC_KEY_KEY, value)
-}
-
-/**
- * Pull both credentials out of a pasted localStorage.session object.
- *
- * They are always issued together, so copying the whole object once is both
- * less work and less error-prone than copying two long opaque strings.
- */
-export function parseSession(text: string): {
-  authToken: string
-  encryptionKey: string
-} {
-  let parsed: any
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    throw new Error("剪贴板里不是 JSON。复制整个 localStorage.session 对象。")
-  }
-  const inner = parsed?.session ?? parsed
-  const authToken = typeof inner?.auth_token === "string" ? inner.auth_token.trim() : ""
-  const encryptionKey =
-    typeof inner?.encryption_key === "string" ? inner.encryption_key.trim() : ""
-  if (!authToken && !encryptionKey) {
-    throw new Error("这个 JSON 里没有 auth_token / encryption_key。")
-  }
-  return { authToken, encryptionKey }
+  return (activeAccount()?.encryptionKey ?? "").trim()
 }
 
 /* -------------------------------------------------------------------- HTTP */
@@ -926,13 +890,24 @@ export async function pushChunks(
 
 /* --------------------------------------------------------- local library */
 
+/**
+ * The library is stored per account.
+ *
+ * Not a nicety: pushing in mirror mode with another account's library loaded
+ * would delete that account's chunks.
+ */
+function cacheKey(): string {
+  const id = activeId()
+  return id ? CACHE_KEY + "." + id : CACHE_KEY
+}
+
 export function loadCache(): Chunk[] {
-  const raw = Storage.get<Chunk[]>(CACHE_KEY)
+  const raw = Storage.get<Chunk[]>(cacheKey())
   return Array.isArray(raw) ? raw : []
 }
 
 export function saveCache(chunks: Chunk[]): Chunk[] {
-  Storage.set(CACHE_KEY, chunks)
+  Storage.set(cacheKey(), chunks)
   return chunks
 }
 

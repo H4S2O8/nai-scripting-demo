@@ -54,6 +54,8 @@ export type Workbench = {
 
   token: string
   account: Account | null
+  /** Name of the active account slot, shown in the toolbar. */
+  accountLabel: string
   quote: Quote
 
   history: GeneratedImage[]

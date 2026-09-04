@@ -98,6 +98,18 @@ NovelAI 的 PNG 没有日期字段，`Photos.savePhoto` 拿到这样的容器会
 不直接改归档原图：`ImageIO` 重新编码是否原样搬运 PNG 的 tEXt 块没验证过，而
 NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传——日期错了总比存不进去好。
 
+## 多账户：词库必须跟着账户走
+
+三个凭据混用是**不可诊断**的故障：A 的 auth_token 配 B 的 encryption_key，keystore
+解不开任何 chunk，看起来和客户端坏了一模一样。所以它们绑成一个 slot 一起存、一起编辑。
+
+更要命的是词库。如果本机词库全局共用，切到 B 账户后用「镜像」推送，会拿着 A 的词库
+去覆盖 B——**直接删掉 B 的 chunk**。所以缓存键带账户 id（`chunks.ts` 的 `cacheKey()`）。
+`dev/test_accounts.mjs` 里专门有一组断言盯着这个。
+
+迁移旧的单账户安装时，legacy Keychain 条目**保留不删**：万一用户回滚到旧版本，
+旧代码还能找到自己的 token。
+
 ## 编辑器的 draft 存 token 数组，不存字符串
 
 一开始每次按键都 `serializePrompt(setText(...))` 再 parse 回来。serialize 会 trim

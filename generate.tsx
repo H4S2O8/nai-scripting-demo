@@ -156,7 +156,7 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
           topBarTrailing: [
             <Button
               systemImage="person.crop.circle"
-              title="账号"
+              title={wb.accountLabel || "账号"}
               action={wb.openAccount}
             />,
           ],

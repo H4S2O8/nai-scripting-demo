@@ -10,7 +10,6 @@ import {
   NavigationStack,
   RoundedRectangle,
   ScrollView,
-  SecureField,
   Spacer,
   Text,
   TextField,
@@ -32,13 +31,10 @@ import {
   createChunk,
   deleteChunkLocal,
   parseImport,
-  parseSession,
   updateChunk,
   pullChunks,
   pushChunks,
   saveCache,
-  saveEncryptionKey,
-  saveSyncToken,
   searchChunks,
   selfTestCodec,
 } from "./chunks"
@@ -57,12 +53,17 @@ const MODES: { id: SyncMode; label: string; note: string }[] = [
 
 export function ChunksPage({
   promptText,
+  accountKey,
   onToggle,
+  onOpenAccount,
   onClose,
 }: {
   /** The prompt these chunks toggle in and out of, for the on/off state. */
   promptText: string
+  /** Changes when the active account changes, so credentials are re-read. */
+  accountKey: string
   onToggle: (chunk: Chunk) => void
+  onOpenAccount: () => void
   /** Only set when shown as a sheet; as a tab there is nothing to close. */
   onClose?: () => void
 }) {
@@ -80,11 +81,13 @@ export function ChunksPage({
   // Read once. A useState initializer function is not a form this platform
   // documents, and re-reading Storage on every render would parse the whole
   // library each time.
+  // Credentials and the library both belong to the active account, so both are
+  // re-read whenever it changes.
   useEffect(() => {
     setSyncToken(loadSyncToken())
     setEncKey(loadEncryptionKey())
     setCache(loadCache())
-  }, [])
+  }, [accountKey])
 
   const log = (line: string) => setLines((prev) => [...prev, line].slice(-200))
 
@@ -110,35 +113,6 @@ export function ChunksPage({
       setBusy(false)
     }
   }
-
-  const persistCredentials = () => {
-    saveSyncToken(syncToken)
-    saveEncryptionKey(encKey)
-    log("✔ 已存入 Keychain。")
-  }
-
-  const pasteSession = () =>
-    guard("粘贴网页会话", async () => {
-      const text = await Pasteboard.getString()
-      if (!text) {
-        log("剪贴板里没有文本。")
-        return
-      }
-      const session = parseSession(text)
-      if (session.authToken) {
-        setSyncToken(session.authToken)
-        saveSyncToken(session.authToken)
-      }
-      if (session.encryptionKey) {
-        setEncKey(session.encryptionKey)
-        saveEncryptionKey(session.encryptionKey)
-      }
-      log(
-        `✔ 读到 ${session.authToken ? "auth_token" : ""}` +
-          `${session.authToken && session.encryptionKey ? " 和 " : ""}` +
-          `${session.encryptionKey ? "encryption_key" : ""}，已存入 Keychain。`,
-      )
-    })
 
   const runSelfTest = () => {
     try {
@@ -298,61 +272,25 @@ export function ChunksPage({
               />
             }
           >
-            <HStack spacing={10} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Chip
-                label="粘贴网页会话"
-                selected={false}
-                disabled={busy}
-                onTap={() => void pasteSession()}
-              />
-              <Spacer />
-            </HStack>
-            <Text font={11} foregroundStyle="tertiaryLabel">
-              在 novelai.net 控制台执行 localStorage.session，复制整个 JSON 后点上面这个键，
-              auth_token 和 encryption_key 会一起填好。
-            </Text>
-            <FieldLabel
-              text="encryption_key"
-              hint={encKey ? "已保存" : "必填"}
-            />
-            <Well padding={8}>
-              <SecureField
-                title="encryption_key"
-                value={encKey}
-                onChanged={setEncKey}
-                prompt="从网页会话里复制"
-                labelsHidden
-              />
-            </Well>
-            <FieldLabel text="auth_token" hint={syncToken ? "已保存" : "必填"} />
-            <Well padding={8}>
-              <SecureField
-                title="auth_token"
-                value={syncToken}
-                onChanged={setSyncToken}
-                prompt="网页会话的 auth_token"
-                labelsHidden
-              />
-            </Well>
-            <HStack spacing={10} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Button
-                title="保存"
-                action={persistCredentials}
-                buttonStyle="bordered"
-                controlSize="small"
-                tint={ACCENT}
-              />
+            <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
               <StatPill
                 label="状态"
                 value={ready ? "可同步" : "缺凭据"}
                 systemImage={ready ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"}
               />
               <Spacer />
+              <Button
+                title="账号设置"
+                systemImage="person.crop.circle"
+                action={onOpenAccount}
+                buttonStyle="bordered"
+                controlSize="small"
+                tint={ACCENT}
+              />
             </HStack>
             <Text font={11} foregroundStyle="tertiaryLabel">
-              这两项都只在网页登录会话里，生图用的 pst- Token 在这里用不了——那些接口会直接回
-              「usage of persistent access tokens is not allowed for this endpoint」。
-              两者都只留在本机 Keychain；encryption_key 不出设备，仅用于本地解开 keystore。
+              词库用的是当前账户的 auth_token 和 encryption_key，在账号页里填。生图用的
+              pst- 令牌在这些接口上会被直接拒绝。切换账户时词库会跟着一起换。
             </Text>
           </Card>
 

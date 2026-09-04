@@ -8,10 +8,10 @@
  * the official web client's own requests.
  */
 
+import { activeAccount } from "./accounts"
 import { expandPrompt } from "./prompttokens"
 
 const IMAGE_HOST = "https://image.novelai.net"
-const TOKEN_KEY = "nai_pst_token"
 const OUTPUT_DIR = "NAI-Studio"
 
 /* ------------------------------------------------------------------ options */
@@ -538,17 +538,9 @@ export function buildPayload(params: GenerateParams, seed: number) {
 
 /* ------------------------------------------------------------------ token */
 
+/** The generation token of whichever account is active. */
 export function loadToken(): string {
-  return (Keychain.get(TOKEN_KEY) ?? "").trim()
-}
-
-export function saveToken(token: string): boolean {
-  const value = token.trim()
-  if (!value) {
-    Keychain.remove(TOKEN_KEY)
-    return true
-  }
-  return Keychain.set(TOKEN_KEY, value)
+  return (activeAccount()?.token ?? "").trim()
 }
 
 export function looksLikeToken(token: string): boolean {

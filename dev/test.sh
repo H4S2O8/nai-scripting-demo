@@ -11,6 +11,9 @@ echo
 echo "== crypto vs reference implementations =="
 node dev/test_crypto.mjs
 echo
+echo "== accounts =="
+node dev/test_accounts.mjs
+echo
 echo "== prompt token model =="
 node dev/test_prompt.mjs
 echo

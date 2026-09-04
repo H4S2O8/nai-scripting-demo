@@ -42,6 +42,7 @@ import {
   rollSeed,
 } from "./nai"
 import { Chunk, loadCache } from "./chunks"
+import { activeAccount } from "./accounts"
 import { toggleChunk } from "./prompttokens"
 import { clearHistory, loadHistory, loadParams, pushHistory, removeHistory, saveParams } from "./store"
 import { EditTarget, Workbench } from "./workbench"
@@ -115,6 +116,9 @@ function MainView() {
   const [status, setStatus] = useState("准备就绪")
 
   const [accountOpen, setAccountOpen] = useState(false)
+  // Bumped when the active account or its credentials change, so every page
+  // that caches something account-scoped re-reads it.
+  const [accountKey, setAccountKey] = useState(0)
   const [viewerOpen, setViewerOpen] = useState(false)
   const [editing, setEditing] = useState<EditTarget | null>(null)
   // Bumped on every open so the editor resets even when reopening the same
@@ -145,6 +149,21 @@ function MainView() {
   }, [])
 
   const quote = useMemo(() => estimateAnlas(params, account), [params, account])
+
+  /** Re-read everything that belongs to the account that is now active. */
+  const reloadAccount = () => {
+    const saved = loadToken()
+    setToken(saved)
+    setChunks(loadCache())
+    setAccountKey((key) => key + 1)
+    if (saved && looksLikeToken(saved)) {
+      fetchAccount(saved)
+        .then(setAccount)
+        .catch(() => setAccount(null))
+    } else {
+      setAccount(null)
+    }
+  }
 
   const patch = (next: Partial<GenerateParams>) => {
     setParams((prev) => {
@@ -232,6 +251,7 @@ function MainView() {
     patch,
     token,
     account,
+    accountLabel: activeAccount()?.label ?? "",
     quote,
     history,
     current,
@@ -346,10 +366,10 @@ function MainView() {
           onChanged: setAccountOpen,
           content: (
             <AccountSheet
-              token={token}
+              sessionKey={String(accountKey)}
               account={account}
-              onTokenChanged={setToken}
               onAccountChanged={setAccount}
+              onSwitched={reloadAccount}
               onClose={() => setAccountOpen(false)}
             />
           ),
@@ -377,7 +397,9 @@ function MainView() {
         <Tab title="词库" systemImage="square.grid.2x2" value={TAB_CHUNKS}>
           <ChunksPage
             promptText={params.prompt}
+            accountKey={String(accountKey)}
             onToggle={(chunk) => patch({ prompt: toggleChunk(params.prompt, chunk) })}
+            onOpenAccount={() => setAccountOpen(true)}
           />
         </Tab>
       </TabView>
