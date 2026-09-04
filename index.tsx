@@ -35,6 +35,7 @@ import {
   estimateAnlas,
   fetchAccount,
   generateOne,
+  isOpus,
   loadToken,
   looksLikeToken,
   maxCharacterPrompts,
@@ -252,6 +253,8 @@ function MainView() {
     token,
     account,
     accountLabel: activeAccount()?.label ?? "",
+    opusPercent:
+      isOpus(account) && account?.opusPercent != null ? account.opusPercent : null,
     quote,
     history,
     current,

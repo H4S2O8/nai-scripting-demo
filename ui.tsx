@@ -7,6 +7,7 @@
  */
 import {
   Button,
+  Circle,
   HStack,
   Image,
   Menu,
@@ -16,6 +17,7 @@ import {
   Text,
   Toggle,
   VStack,
+  ZStack,
 } from "scripting"
 
 import {
@@ -399,5 +401,67 @@ export function PrimaryButton({
         <Spacer />
       </HStack>
     </Button>
+  )
+}
+
+/**
+ * Opus allowance as a ring around the account avatar.
+ *
+ * The remaining percentage is the number an Opus subscriber actually watches,
+ * and it was buried on the account page. A ring reads at a glance and costs no
+ * toolbar width. The colour carries the warning: the ring goes amber and then
+ * red as the allowance runs down, so it is noticeable without being read.
+ */
+export function OpusRing({
+  percent,
+  initial,
+  size = 28,
+}: {
+  /** 0-100 remaining, or null when this account has no Opus allowance. */
+  percent: number | null
+  /** Shown in the middle to tell accounts apart; falls back to a person glyph. */
+  initial?: string
+  size?: number
+}) {
+  const fraction =
+    percent == null ? null : Math.min(1, Math.max(0, percent / 100))
+  const color =
+    fraction == null
+      ? ACCENT
+      : fraction <= 0.1
+        ? ("systemRed" as any)
+        : fraction <= 0.25
+          ? ("systemOrange" as any)
+          : ACCENT
+
+  return (
+    <ZStack frame={{ width: size, height: size }}>
+      {fraction == null ? null : (
+        <Circle
+          stroke={{
+            shapeStyle: { color, opacity: 0.2 },
+            strokeStyle: { lineWidth: 2.5 },
+          }}
+        />
+      )}
+      {fraction == null ? null : (
+        <Circle
+          trim={{ from: 0, to: fraction }}
+          stroke={{
+            shapeStyle: color,
+            strokeStyle: { lineWidth: 2.5, lineCap: "round" },
+          }}
+          // Start the arc at twelve o'clock instead of three.
+          rotationEffect={-90}
+        />
+      )}
+      {initial ? (
+        <Text font={12} fontWeight="semibold" foregroundStyle={color}>
+          {initial}
+        </Text>
+      ) : (
+        <Image systemName="person.crop.circle" font={14} foregroundStyle={color} />
+      )}
+    </ZStack>
   )
 }

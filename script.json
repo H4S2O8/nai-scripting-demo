@@ -5,7 +5,7 @@
   },
   "icon": "photo.artframe",
   "color": "#7C5CFA",
-  "version": "3.3.3",
+  "version": "3.4.0",
   "runInApp": true,
   "description": "NovelAI text-to-image workbench with Prompt Chunks sync: prompts, model, size, sampling parameters, Anlas estimate and local history.",
   "localizedDescriptions": {

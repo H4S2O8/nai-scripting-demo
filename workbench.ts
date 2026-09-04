@@ -56,6 +56,8 @@ export type Workbench = {
   account: Account | null
   /** Name of the active account slot, shown in the toolbar. */
   accountLabel: string
+  /** Opus allowance remaining, 0-100, or null when there is none. */
+  opusPercent: number | null
   quote: Quote
 
   history: GeneratedImage[]

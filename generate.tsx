@@ -25,7 +25,7 @@ import {
 import { SIZE_PRESETS, maxCharacterPrompts, modelLabel, rollSeed } from "./nai"
 import { summarizePrompt } from "./prompttokens"
 import { CAN_MINIMIZE, VERSION, Workbench } from "./workbench"
-import { Chip, IconButton, PrimaryButton } from "./ui"
+import { Chip, IconButton, OpusRing, PrimaryButton } from "./ui"
 import {
   ACCENT,
   CANVAS_GRADIENT,
@@ -154,11 +154,12 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
               ]
             : [<Button systemImage="xmark" title="关闭" action={() => dismiss()} />],
           topBarTrailing: [
-            <Button
-              systemImage="person.crop.circle"
-              title={wb.accountLabel || "账号"}
-              action={wb.openAccount}
-            />,
+            <Button buttonStyle="plain" action={wb.openAccount}>
+              <OpusRing
+                percent={wb.opusPercent}
+                initial={wb.accountLabel.trim().slice(0, 1)}
+              />
+            </Button>,
           ],
         }}
         safeAreaInset={{
