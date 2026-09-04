@@ -11,6 +11,13 @@ echo
 echo "== crypto vs reference implementations =="
 node dev/test_crypto.mjs
 echo
+echo "== mcp server (skipped unless mcp/node_modules exists) =="
+if [ -d mcp/node_modules ]; then
+  ( cd mcp && npm run --silent build && node test_server.mjs )
+else
+  echo "  -- skipped; run 'cd mcp && npm install' to include it"
+fi
+echo
 echo "== accounts =="
 node dev/test_accounts.mjs
 echo
