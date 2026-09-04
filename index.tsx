@@ -396,8 +396,10 @@ function MainView() {
         </Tab>
         <Tab title="词库" systemImage="square.grid.2x2" value={TAB_CHUNKS}>
           <ChunksPage
+            chunks={chunks}
             promptText={params.prompt}
             accountKey={String(accountKey)}
+            onChunksChanged={setChunks}
             onToggle={(chunk) => patch({ prompt: toggleChunk(params.prompt, chunk) })}
             onOpenAccount={() => setAccountOpen(true)}
           />

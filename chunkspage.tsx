@@ -23,7 +23,6 @@ import {
   Chunk,
   SyncAccount,
   SyncMode,
-  loadCache,
   loadEncryptionKey,
   loadSyncToken,
   makeExport,
@@ -52,12 +51,23 @@ const MODES: { id: SyncMode; label: string; note: string }[] = [
 ]
 
 export function ChunksPage({
+  chunks,
   promptText,
   accountKey,
+  onChunksChanged,
   onToggle,
   onOpenAccount,
   onClose,
 }: {
+  /**
+   * Owned by the root, not by this page.
+   *
+   * It used to keep its own copy, so pulling the library here left every prompt
+   * editor still showing the empty one the root had loaded at startup. As a
+   * sheet that was masked by a reload on close; as a tab there is no close.
+   */
+  chunks: Chunk[]
+  onChunksChanged: (chunks: Chunk[]) => void
   /** The prompt these chunks toggle in and out of, for the on/off state. */
   promptText: string
   /** Changes when the active account changes, so credentials are re-read. */
@@ -69,7 +79,6 @@ export function ChunksPage({
 }) {
   const [syncToken, setSyncToken] = useState("")
   const [encKey, setEncKey] = useState("")
-  const [cache, setCache] = useState<Chunk[]>([])
   const [query, setQuery] = useState("")
   const [mode, setMode] = useState<SyncMode>("merge")
   const [busy, setBusy] = useState(false)
@@ -86,12 +95,11 @@ export function ChunksPage({
   useEffect(() => {
     setSyncToken(loadSyncToken())
     setEncKey(loadEncryptionKey())
-    setCache(loadCache())
   }, [accountKey])
 
   const log = (line: string) => setLines((prev) => [...prev, line].slice(-200))
 
-  const results = useMemo(() => searchChunks(cache, query), [cache, query])
+  const results = useMemo(() => searchChunks(chunks, query), [chunks, query])
 
   // No fallback to the generation token: these endpoints answer a pst- token
   // with "usage of persistent access tokens is not allowed for this endpoint".
@@ -125,23 +133,23 @@ export function ChunksPage({
   const pull = () =>
     guard("从账户拉取", async () => {
       const chunks = await pullChunks(account, log)
-      setCache(saveCache(chunks))
+      onChunksChanged(saveCache(chunks))
     })
 
   const push = () =>
     guard("推送到账户（" + mode + "）", async () => {
-      await pushChunks(account, cache, mode, log)
+      await pushChunks(account, chunks, mode, log)
       const refreshed = await pullChunks(account, log)
-      setCache(saveCache(refreshed))
+      onChunksChanged(saveCache(refreshed))
     })
 
   const exportFile = () =>
     guard("导出", async () => {
-      if (cache.length === 0) {
+      if (chunks.length === 0) {
         log("本地库是空的，先拉取或导入。")
         return
       }
-      const payload = makeExport(cache)
+      const payload = makeExport(chunks)
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
       const path = outputDir() + "/prompt-chunks-" + stamp + ".json"
       if (!FileManager.existsSync(outputDir())) {
@@ -165,7 +173,7 @@ export function ChunksPage({
       }
       const text = FileManager.readAsStringSync(picked[0])
       const chunks = parseImport(text)
-      setCache(saveCache(chunks))
+      onChunksChanged(saveCache(chunks))
       log(`✔ 导入 ${chunks.length} 个对象到本地库。`)
       log("这一步只写本地；要同步到账户请用下面的推送。")
     })
@@ -178,7 +186,7 @@ export function ChunksPage({
         return
       }
       const chunks = parseImport(text)
-      setCache(saveCache(chunks))
+      onChunksChanged(saveCache(chunks))
       log(`✔ 导入 ${chunks.length} 个对象到本地库。`)
     })
 
@@ -207,22 +215,22 @@ export function ChunksPage({
               sessionKey={editorFor ?? ""}
               chunk={
                 editorFor && editorFor !== "new"
-                  ? cache.find((c) => c.id === editorFor)
+                  ? chunks.find((c) => c.id === editorFor)
                   : null
               }
-              categories={categoriesOf(cache)}
+              categories={categoriesOf(chunks)}
               onSave={(draft) => {
                 const next =
                   editorFor && editorFor !== "new"
-                    ? updateChunk(cache, editorFor, draft)
-                    : createChunk(cache, draft)
-                setCache(saveCache(next))
+                    ? updateChunk(chunks, editorFor, draft)
+                    : createChunk(chunks, draft)
+                onChunksChanged(saveCache(next))
                 log(editorFor === "new" ? `✔ 新建「${draft.label}」` : `✔ 已修改「${draft.label}」`)
               }}
               onDelete={
                 editorFor && editorFor !== "new"
                   ? () => {
-                      setCache(saveCache(deleteChunkLocal(cache, editorFor)))
+                      onChunksChanged(saveCache(deleteChunkLocal(chunks, editorFor)))
                       log("✔ 已从本机词库删除")
                     }
                   : undefined
@@ -238,8 +246,8 @@ export function ChunksPage({
           message: (
             <Text>
               {mode === "mirror"
-                ? `本地 ${cache.length} 个对象将覆盖账户内容，账户里多出来的 chunk 会被删除，且无法撤销。`
-                : `将把本地 ${cache.length} 个对象按「${MODES.find((m) => m.id === mode)?.label}」写入账户。实际的新增 / 更新数量会在拉取账户现状后写进日志。`}
+                ? `本地 ${chunks.length} 个对象将覆盖账户内容，账户里多出来的 chunk 会被删除，且无法撤销。`
+                : `将把本地 ${chunks.length} 个对象按「${MODES.find((m) => m.id === mode)?.label}」写入账户。实际的新增 / 更新数量会在拉取账户现状后写进日志。`}
             </Text>
           ),
           actions: (
@@ -300,8 +308,8 @@ export function ChunksPage({
             systemImage="books.vertical.fill"
             trailing={
               <Text font={11} fontDesign="monospaced" foregroundStyle="tertiaryLabel">
-                {cache.filter((c) => !c.isCategory).length} chunk ·{" "}
-                {cache.filter((c) => c.isCategory && c.id !== "default").length} 分类
+                {chunks.filter((c) => !c.isCategory).length} chunk ·{" "}
+                {chunks.filter((c) => c.isCategory && c.id !== "default").length} 分类
               </Text>
             }
           >
@@ -335,7 +343,7 @@ export function ChunksPage({
               </VStack>
             ) : (
               <ChunkGrid
-                chunks={cache}
+                chunks={chunks}
                 text={promptText}
                 scope="library"
                 onToggle={onToggle}
@@ -385,7 +393,7 @@ export function ChunksPage({
                   log("❌ 先填 auth_token 和 encryption_key。")
                   return
                 }
-                if (cache.length === 0) {
+                if (chunks.length === 0) {
                   log("❌ 本地库是空的。")
                   return
                 }
