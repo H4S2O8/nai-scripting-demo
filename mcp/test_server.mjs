@@ -9,6 +9,8 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { spawn } from "node:child_process"
 import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -31,7 +33,7 @@ function check(name, ok, detail = "") {
 
 console.log("zip reader")
 {
-  const { readZip, firstPng } = await import(join(here, "dist/server.mjs").replace(/server\.mjs$/, "zip.mjs"))
+  const { readZip, firstPng } = await import(join(here, "dist/zip.mjs"))
     .catch(async () => {
       // zip.ts is bundled into server.mjs; build a standalone copy to test it.
       const out = join(here, "dist/zip.mjs")
@@ -91,7 +93,7 @@ console.log("mcp server over stdio")
   const outDir = mkdtempSync(join(tmpdir(), "nai-mcp-out-"))
   const transport = new StdioClientTransport({
     command: "node",
-    args: [join(here, "dist/server.mjs")],
+    args: [join(here, "dist/stdio.mjs")],
     env: { ...process.env, NOVELAI_TOKEN: "", NOVELAI_OUTPUT_DIR: outDir },
   })
   const client = new Client({ name: "test", version: "1.0.0" })
@@ -141,6 +143,111 @@ console.log("mcp server over stdio")
   check("account reports the missing token too", account.isError === true)
 
   await client.close()
+  rmSync(outDir, { recursive: true, force: true })
+}
+
+/* ------------------------------------------------------------ http transport */
+
+console.log("http transport")
+{
+  const SECRET = "test-secret-not-a-real-one"
+  const PORT = 8791 + (process.pid % 100)
+  const outDir = mkdtempSync(join(tmpdir(), "nai-mcp-http-"))
+  writeFileSync(join(outDir, "sample.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+  // An endpoint that spends Anlas must not be startable without a secret.
+  const naked = spawn("node", [join(here, "dist/http.mjs")], {
+    env: { ...process.env, MCP_AUTH_TOKEN: "", NOVELAI_TOKEN: "pst-x", PORT: String(PORT + 1) },
+    stdio: ["ignore", "ignore", "pipe"],
+  })
+  const nakedErr = await new Promise((resolve) => {
+    let text = ""
+    naked.stderr.on("data", (d) => (text += d))
+    naked.on("exit", (code) => resolve({ code, text }))
+  })
+  check("refuses to start without MCP_AUTH_TOKEN", nakedErr.code === 1 && /MCP_AUTH_TOKEN/.test(nakedErr.text), nakedErr.text.slice(0, 120))
+
+  const child = spawn("node", [join(here, "dist/http.mjs")], {
+    env: {
+      ...process.env,
+      MCP_AUTH_TOKEN: SECRET,
+      NOVELAI_TOKEN: "pst-not-real",
+      NOVELAI_OUTPUT_DIR: outDir,
+      PORT: String(PORT),
+      HOST: "127.0.0.1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("server did not start")), 10000)
+    child.stdout.on("data", (d) => {
+      if (String(d).includes("novelai mcp on")) {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+  })
+
+  const base = `http://127.0.0.1:${PORT}`
+  const health = await fetch(base + "/health")
+  check("health needs no auth", health.status === 200)
+
+  check("mcp without a token is rejected", (await fetch(base + "/mcp", { method: "POST" })).status === 401)
+  check(
+    "mcp with the wrong token is rejected",
+    (await fetch(base + "/mcp", { method: "POST", headers: { authorization: "Bearer wrong" } })).status === 401,
+  )
+  check(
+    "a token of the right length but wrong value is rejected",
+    (await fetch(base + "/mcp", {
+      method: "POST",
+      headers: { authorization: "Bearer " + "x".repeat(SECRET.length) },
+    })).status === 401,
+  )
+  check("images need auth too", (await fetch(base + "/images/sample.png")).status === 401)
+
+  const authed = { headers: { authorization: "Bearer " + SECRET } }
+  const image = await fetch(base + "/images/sample.png", authed)
+  check("an authorised image request is served", image.status === 200 && image.headers.get("content-type") === "image/png")
+  // basename() strips any directory part, so traversal cannot escape the folder.
+  check(
+    "path traversal is refused",
+    (await fetch(base + "/images/..%2F..%2F..%2Fetc%2Fpasswd", authed)).status === 404,
+  )
+  check("unknown paths 404", (await fetch(base + "/nope", authed)).status === 404)
+
+  const httpClient = new Client({ name: "test-http", version: "1.0.0" })
+  await httpClient.connect(
+    new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { authorization: "Bearer " + SECRET } },
+    }),
+  )
+  const httpTools = (await httpClient.listTools()).tools.map((t) => t.name).sort()
+  check(
+    "the same three tools are served over http",
+    JSON.stringify(httpTools) ===
+      JSON.stringify(["novelai_account", "novelai_generate_image", "novelai_list_options"]),
+    JSON.stringify(httpTools),
+  )
+  const opts = await httpClient.callTool({ name: "novelai_list_options", arguments: {} })
+  check("tools work over http", JSON.parse(opts.content[0].text).models.length >= 8)
+
+  // Two clients at once: each POST gets its own server and transport.
+  const second = new Client({ name: "test-http-2", version: "1.0.0" })
+  await second.connect(
+    new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { authorization: "Bearer " + SECRET } },
+    }),
+  )
+  const [a, b] = await Promise.all([
+    httpClient.callTool({ name: "novelai_list_options", arguments: {} }),
+    second.callTool({ name: "novelai_list_options", arguments: {} }),
+  ])
+  check("concurrent clients do not interfere", a.content[0].text === b.content[0].text)
+
+  await httpClient.close()
+  await second.close()
+  child.kill()
   rmSync(outDir, { recursive: true, force: true })
 }
 

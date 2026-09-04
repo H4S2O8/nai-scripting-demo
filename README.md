@@ -198,20 +198,27 @@ tag 自动补全、提示词法典。这些是 NovelAI 页面的进阶功能，�
 
 Chunks 目前只做同步与插入，不能在 App 内新建 / 改名 / 重排 chunk——那些回网页做。
 
-## MCP Server（电脑上用）
+## MCP Server
 
-同一套请求构造也包成了 MCP server，Claude Code / Claude Desktop 可以直接出图：
+同一套请求构造也包成了 MCP server，两个入口：
+
+- **stdio** —— 本机的 Claude Code / Claude Desktop
+- **Streamable HTTP** —— 部署到自己的服务器，供手机等远程客户端连接，图片内联渲染进对话
 
 ```bash
 cd mcp && npm install && npm run build
-claude mcp add novelai --env NOVELAI_TOKEN=pst-你的令牌 -- node "$PWD/dist/server.mjs"
+claude mcp add novelai --env NOVELAI_TOKEN=pst-你的令牌 -- node "$PWD/dist/stdio.mjs"
 ```
+
+服务器部署（systemd + TLS 反代 + 认证）见 [mcp/README.md](mcp/README.md)。
+
+**这个端点会花钱**——每次调用消耗账户 Anlas，所以 HTTP 模式下 `MCP_AUTH_TOKEN` 是必填的，
+不设置进程直接拒绝启动。
 
 三个工具：`novelai_generate_image`（出图，返回路径 / seed / Anlas 估算 / 实际发送的提示词）、
 `novelai_list_options`（模型、采样器、画幅预设）、`novelai_account`（订阅与额度）。
-细节见 [mcp/README.md](mcp/README.md)。
 
-手机 App 和 MCP 共用 `nai.ts` 里的 `buildPayload`——两边发出去的 payload 逐字段一致。
+手机 App 和 MCP 共用 `nai.ts` 的 `buildPayload`——两边发出去的 payload 逐字段一致。
 
 ## 开发
 
