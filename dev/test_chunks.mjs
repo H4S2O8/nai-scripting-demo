@@ -211,6 +211,76 @@ const refCat = refDecode(encCat, ks.keys[category.containerId])
 check("category keeps childOrder", JSON.stringify(refCat.childOrder) === JSON.stringify(category.childOrder))
 check("category is marked", refCat.isCategory === true)
 
+console.log("keystore key shapes")
+// new Uint8Array(x) fails silently for two of these, which is exactly how
+// "every object failed to decrypt" happens with a keystore that opened fine.
+const shapes = {
+  "number array": keyBytes,
+  "base64 string": Buffer.from(keyBytes).toString("base64"),
+  "stringified typed array": Object.fromEntries(keyBytes.map((b, i) => [String(i), b])),
+}
+for (const [name, stored] of Object.entries(shapes)) {
+  const cid = crypto.randomUUID()
+  const shaped = { master: new Uint8Array(32), keys: { [cid]: stored }, extras: {}, dirty: false }
+  const obj = refEncode({ ...sample, containerId: cid, remoteId: "" }, keyBytes)
+  let ok = false
+  try {
+    ok = C.decodeChunk({ id: "o", data: obj.data, meta: cid }, shaped).expansion === sample.expansion
+  } catch (e) {
+    ok = false
+  }
+  check(`keystore key stored as ${name} decodes`, ok)
+}
+{
+  const cid = crypto.randomUUID()
+  const shaped = { master: new Uint8Array(32), keys: { [cid]: [1, 2, 3] }, extras: {}, dirty: false }
+  let msg = ""
+  try {
+    C.decodeChunk({ id: "o", data: "AAAA", meta: cid }, shaped)
+  } catch (e) {
+    msg = String(e)
+  }
+  check("a wrong-length key is named, not mistaken for a bad key", /形状不对/.test(msg), msg)
+}
+
+console.log("failure summary")
+{
+  const cid = crypto.randomUUID()
+  const emptyKs = { master: new Uint8Array(32), keys: {}, extras: {}, dirty: false }
+  const listed = {
+    chunks: [],
+    failed: 2,
+    total: 2,
+    failures: [
+      { id: "a", meta: cid, reason: "keystore 中缺少 meta=" + cid + " 的密钥", keyPresent: false, compressed: true },
+      { id: "b", meta: cid, reason: "keystore 中缺少 meta=" + cid + " 的密钥", keyPresent: false, compressed: true },
+    ],
+  }
+  const lines = C.summarizeFailures(listed, emptyKs).join("\n")
+  check("empty keystore is called out by name", /一个密钥都没有/.test(lines), lines)
+  check("identical reasons collapse into one bucket", /× 2/.test(lines), lines)
+}
+{
+  const populated = { master: new Uint8Array(32), keys: { other: keyBytes }, extras: {}, dirty: false }
+  const listed = {
+    chunks: [], failed: 1, total: 1,
+    failures: [{ id: "a", meta: "abc", reason: "keystore 中缺少 meta=abc 的密钥", keyPresent: false, compressed: false }],
+  }
+  const lines = C.summarizeFailures(listed, populated).join("\n")
+  check("keys present but not matching points at a mismatched account", /不同的账户/.test(lines), lines)
+}
+{
+  const cid = crypto.randomUUID()
+  const populated = { master: new Uint8Array(32), keys: { [cid]: keyBytes }, extras: {}, dirty: false }
+  const listed = {
+    chunks: [], failed: 1, total: 1,
+    failures: [{ id: "a", meta: cid, reason: "对象 a 解密失败", keyPresent: true, compressed: true }],
+  }
+  const lines = C.summarizeFailures(listed, populated).join("\n")
+  check("key present and decryption failing points at encryption_key", /encryption_key 不是这个账户/.test(lines), lines)
+}
+check("no failures means no summary", C.summarizeFailures({ chunks: [], failed: 0, total: 0, failures: [] }, ks).length === 0)
+
 console.log("keystore blob")
 const ks2 = { master: new Uint8Array(crypto.randomBytes(32)), keys: { a: keyBytes }, extras: { iv: "legacy-iv", data: "legacy-data" }, dirty: false }
 const blob = C.encodeKeystoreBlob(ks2)

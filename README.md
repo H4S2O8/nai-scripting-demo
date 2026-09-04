@@ -196,4 +196,5 @@ node dev/test_chunks.mjs # chunk / keystore 编解码与油猴脚本互导
 | 改了代码手机没变 | `script.json` 的 `version` 没加一 |
 | Chunks 报 keystore 解密失败 | `encryption_key` 不对，重新从网页会话复制 |
 | Chunks 提示 persistent access tokens not allowed | 填的是 `pst-` token，换成网页会话的 `auth_token` |
+| Chunks 全部对象无法解密 | 看日志里跟在后面的那几行——会指出是 keystore 空、密钥对不上 meta（两个凭据来自不同账户）、密钥形状异常，还是 `encryption_key` 不对 |
 | Chunks 拉取 401 | `auth_token` 过期了，重新复制一次 `localStorage.session` |

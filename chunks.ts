@@ -34,7 +34,7 @@
  * the keystore.
  */
 import { blake2b256 } from "./blake2b"
-import { secretbox, secretboxOpen } from "./nacl"
+import { SECRETBOX_KEY_BYTES, secretbox, secretboxOpen } from "./nacl"
 
 const API = "https://image.novelai.net"
 const OBJ_TYPE = "promptmacros"
@@ -398,18 +398,68 @@ export async function storeKeystore(
   ks.dirty = false
 }
 
+/**
+ * Coerce one keystore entry into bytes.
+ *
+ * The inner JSON normally holds a plain number array, but `new Uint8Array(x)`
+ * fails *silently* — producing an empty key, and therefore a decryption failure
+ * on every object — for two shapes that do turn up: a base64 string, and the
+ * `{"0":12,"1":34,...}` that JSON.stringify makes of a typed array. Handle all
+ * three explicitly rather than letting a wrong shape look like a wrong key.
+ */
+function toKeyBytes(value: unknown): Uint8Array | null {
+  if (value == null) return null
+  if (value instanceof Uint8Array) return value
+  if (Array.isArray(value)) return new Uint8Array(value)
+  if (typeof value === "string") {
+    const bytes = Data.fromBase64String(value)?.toUint8Array()
+    return bytes && bytes.length > 0 ? bytes : null
+  }
+  if (typeof value === "object") {
+    const indexed = value as Record<string, number>
+    const length = Object.keys(indexed).length
+    if (length === 0) return null
+    const out = new Uint8Array(length)
+    for (let i = 0; i < length; i++) {
+      const byte = indexed[String(i)]
+      if (typeof byte !== "number") return null
+      out[i] = byte
+    }
+    return out
+  }
+  return null
+}
+
 function keyFor(
   ks: Keystore,
   containerId: string,
   createIfMissing: boolean,
 ): Uint8Array | null {
   const existing = ks.keys[containerId]
-  if (existing) return new Uint8Array(existing)
+  if (existing !== undefined) {
+    const bytes = toKeyBytes(existing)
+    if (bytes && bytes.length === SECRETBOX_KEY_BYTES) return bytes
+    throw new Error(
+      `keystore 里 ${containerId} 的密钥形状不对（` +
+        `${describeKeyShape(existing)}），无法使用`,
+    )
+  }
   if (!createIfMissing) return null
   const key = randomBytes(32)
   ks.keys[containerId] = Array.from(key)
   ks.dirty = true
   return key
+}
+
+/** Human-readable shape of a keystore value, for diagnostics. */
+export function describeKeyShape(value: unknown): string {
+  if (value == null) return "空"
+  if (Array.isArray(value)) return `数组 长度 ${value.length}`
+  if (typeof value === "string") return `字符串 长度 ${value.length}`
+  if (typeof value === "object") {
+    return `对象 ${Object.keys(value as object).length} 个字段`
+  }
+  return typeof value
 }
 
 /* ----------------------------------------------------------- chunk codec */
@@ -509,28 +559,102 @@ export function selfTestCodec(): string {
 
 /* ------------------------------------------------------------- chunk CRUD */
 
+export type DecodeFailure = {
+  /** Object id, for cross-referencing against the account. */
+  id: string
+  /** The container id the object says its key is under. */
+  meta: string
+  reason: string
+  /** Whether the keystore has any entry at all under that meta. */
+  keyPresent: boolean
+  compressed: boolean
+}
+
+export type ListResult = {
+  chunks: Chunk[]
+  failed: number
+  failures: DecodeFailure[]
+  total: number
+}
+
 export async function listChunks(
   account: SyncAccount,
   ks: Keystore,
-): Promise<{ chunks: Chunk[]; failed: number }> {
+): Promise<ListResult> {
   let response: any
   try {
     response = await api("/user/objects/" + OBJ_TYPE, account)
   } catch (error) {
-    if (statusOf(error) === 404) return { chunks: [], failed: 0 }
+    if (statusOf(error) === 404) {
+      return { chunks: [], failed: 0, failures: [], total: 0 }
+    }
     throw error
   }
+  const objects = response?.objects ?? []
   const chunks: Chunk[] = []
-  let failed = 0
-  for (const obj of response?.objects ?? []) {
+  const failures: DecodeFailure[] = []
+  for (const obj of objects) {
     try {
       chunks.push(decodeChunk(obj, ks))
     } catch (error) {
-      failed++
-      console.warn("[chunks] 跳过一个对象: " + String(error))
+      let compressed = false
+      try {
+        compressed = hasMagic(b64ToBytes(obj?.data ?? ""))
+      } catch {
+        /* unreadable data is itself the answer */
+      }
+      failures.push({
+        id: String(obj?.id ?? "?"),
+        meta: String(obj?.meta ?? "?"),
+        reason: error instanceof Error ? error.message : String(error),
+        keyPresent: ks.keys[String(obj?.meta)] !== undefined,
+        compressed,
+      })
     }
   }
-  return { chunks, failed }
+  return { chunks, failed: failures.length, failures, total: objects.length }
+}
+
+/**
+ * Collapse failures into "reason × count", with the detail needed to tell the
+ * three systemic causes apart: a keystore that opened but is empty, keys stored
+ * in an unexpected shape, and a compression format we cannot read.
+ */
+export function summarizeFailures(result: ListResult, ks: Keystore): string[] {
+  if (result.failures.length === 0) return []
+  const lines: string[] = []
+  const buckets: Record<string, number> = {}
+  for (const failure of result.failures) {
+    // Strip the object id so the same cause groups together.
+    const key = failure.reason.replace(/对象 \S+ /, "对象 ").slice(0, 90)
+    buckets[key] = (buckets[key] ?? 0) + 1
+  }
+  for (const reason of Object.keys(buckets)) {
+    lines.push(`   ${reason} × ${buckets[reason]}`)
+  }
+
+  const sample = result.failures[0]
+  const keyCount = Object.keys(ks.keys).length
+  lines.push(
+    `   示例 meta=${sample.meta.slice(0, 12)}… keystore 中${sample.keyPresent ? "有" : "没有"}这个密钥，` +
+      `该对象${sample.compressed ? "带" : "不带"}压缩头`,
+  )
+  if (keyCount === 0) {
+    lines.push("   ⚠ keystore 解开了但一个密钥都没有——账户可能从未在网页上建过 chunk，或读到的是另一个账户的 keystore。")
+  } else if (!sample.keyPresent) {
+    lines.push(
+      `   ⚠ keystore 有 ${keyCount} 个密钥，但对不上这些对象的 meta——` +
+        "auth_token 和 encryption_key 可能来自不同的账户。",
+    )
+  } else if (/形状不对/.test(sample.reason)) {
+    const raw = ks.keys[sample.meta]
+    lines.push(`   ⚠ 密钥形状：${describeKeyShape(raw)}，期望 32 字节数组。`)
+  } else if (sample.compressed && !compressionUsable()) {
+    lines.push("   ⚠ 对象是压缩的，但本机的 raw DEFLATE 探针没通过——解压这一步用不了。")
+  } else {
+    lines.push("   ⚠ 密钥在、形状对、解压可用，那么就是 encryption_key 不是这个账户的。")
+  }
+  return lines
 }
 
 async function putChunk(account: SyncAccount, chunk: Chunk, ks: Keystore) {
@@ -651,13 +775,20 @@ export async function pullChunks(
 ): Promise<Chunk[]> {
   log("正在读取 keystore…")
   const ks = await loadKeystore(account)
-  log(`keystore 里有 ${Object.keys(ks.keys).length} 个密钥。`)
-  const { chunks, failed } = await listChunks(account, ks)
-  if (failed) log(`⚠ ${failed} 个对象无法解密，已跳过。`)
-  const categories = chunks.filter((c) => c.isCategory && c.id !== ROOT_ID).length
-  const items = chunks.filter((c) => !c.isCategory).length
+  log(
+    `keystore：${Object.keys(ks.keys).length} 个密钥` +
+      `，changeIndex=${ks.changeIndex ?? "无"}` +
+      `，压缩${compressionUsable() ? "可用" : "不可用"}`,
+  )
+  const result = await listChunks(account, ks)
+  if (result.failed) {
+    log(`⚠ ${result.failed}/${result.total} 个对象无法解密：`)
+    for (const line of summarizeFailures(result, ks)) log(line)
+  }
+  const categories = result.chunks.filter((c) => c.isCategory && c.id !== ROOT_ID).length
+  const items = result.chunks.filter((c) => !c.isCategory).length
   log(`✔ 读取到 ${items} 个 chunk、${categories} 个分类。`)
-  return chunks
+  return result.chunks
 }
 
 export type SyncPlan = {
@@ -710,8 +841,12 @@ export async function pushChunks(
   log: Log,
 ): Promise<void> {
   const ks = await loadKeystore(account)
-  const { chunks: existing, failed } = await listChunks(account, ks)
-  if (failed) log(`⚠ 目标账户有 ${failed} 个对象无法解密，同步时会忽略它们。`)
+  const listed = await listChunks(account, ks)
+  const existing = listed.chunks
+  if (listed.failed) {
+    log(`⚠ 目标账户有 ${listed.failed} 个对象无法解密，同步时会忽略它们：`)
+    for (const line of summarizeFailures(listed, ks)) log(line)
+  }
 
   const plan = planSync(source, existing, mode)
   const srcRoot = source.find((c) => c.id === ROOT_ID)
