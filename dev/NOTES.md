@@ -98,6 +98,23 @@ NovelAI 的 PNG 没有日期字段，`Photos.savePhoto` 拿到这样的容器会
 不直接改归档原图：`ImageIO` 重新编码是否原样搬运 PNG 的 tEXt 块没验证过，而
 NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传——日期错了总比存不进去好。
 
+## 编辑器的 draft 存 token 数组，不存字符串
+
+一开始每次按键都 `serializePrompt(setText(...))` 再 parse 回来。serialize 会 trim
+并去掉末尾逗号，于是你打「1girl, 」时逗号被实时吞掉，根本没法接着输入下一个 tag。
+
+现在 draft 就是 `PromptToken[]`，只在提交时序列化一次。相应地 toggle / state 判定
+都要有 token 版本（`toggleChunkIn` / `chunkStateIn`），字符串版本只是包装。
+
+## 提示词不要整个建模成 tag 列表
+
+第一版把文本也按逗号切成一个个 tag token。后果：展开一个 chunk 会炸成一排碎片，
+碎片之间插不进文字，也表达不了「不是 tag 形状」的提示词。
+
+正确的模型是**自由文本段 + chunk 引用交替**：文本段是一整段随便编辑的文字，chunk
+是不可分的一枚。展开 = 换成文本并和左右文本段合并（`mergeAdjacentText`），删除同理，
+这样接缝会自动闭合。
+
 ## sheet / fullScreenCover 的内容不会在两次呈现之间重建
 
 实测踩到：`useState(value)` 只在首次挂载取初值，而模态内容的组件在关闭后并没有被

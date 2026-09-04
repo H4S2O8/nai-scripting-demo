@@ -333,6 +333,7 @@ function MainView() {
             value={targetSpec(editing, params).value}
             chunks={chunks}
             onChanged={(value) => writeTarget(editing, value)}
+            onChunksChanged={setChunks}
             onClose={() => setEditing(null)}
           />
         ) : (

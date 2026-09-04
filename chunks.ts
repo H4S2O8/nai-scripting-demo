@@ -999,6 +999,106 @@ export function groupChunks(chunks: Chunk[]): ChunkGroup[] {
   return groups.filter((group) => group.items.length > 0 || group.category != null)
 }
 
+/* ------------------------------------------------------- local authoring */
+
+function rootOf(chunks: Chunk[]): Chunk {
+  const existing = chunks.find((c) => c.id === ROOT_ID)
+  if (existing) return existing
+  return {
+    id: ROOT_ID,
+    containerId: ROOT_ID,
+    label: "Root Category",
+    isCategory: true,
+    childOrder: [],
+    categoryOrder: [],
+    expansion: "",
+    color: "#808080",
+    version: 1,
+  }
+}
+
+/**
+ * Add a chunk to the local library.
+ *
+ * Ordering lives in the category objects, not in the chunk, so a new chunk has
+ * to be threaded into the right childOrder as well — otherwise it shows up in
+ * the picker's "unsorted" bucket and lands in a different place once the
+ * account syncs it back.
+ */
+export function createChunk(
+  chunks: Chunk[],
+  draft: { label: string; expansion: string; color?: string; categoryId?: string },
+): Chunk[] {
+  const chunk: Chunk = {
+    id: UUID.string(),
+    containerId: UUID.string(),
+    label: draft.label.trim(),
+    expansion: draft.expansion.trim(),
+    color: draft.color || "#6B7280",
+    version: 1,
+    isCategory: false,
+  }
+
+  const out = chunks.slice()
+  const categoryId = draft.categoryId && draft.categoryId !== ROOT_ID ? draft.categoryId : ""
+  const holderIndex = out.findIndex((c) =>
+    categoryId ? c.id === categoryId : c.id === ROOT_ID,
+  )
+
+  if (holderIndex === -1) {
+    const root = rootOf(out)
+    root.childOrder = (root.childOrder ?? []).concat(chunk.id)
+    out.push(root)
+  } else {
+    const holder = { ...out[holderIndex] }
+    holder.childOrder = (holder.childOrder ?? []).concat(chunk.id)
+    out[holderIndex] = holder
+  }
+
+  out.push(chunk)
+  return out
+}
+
+export function updateChunk(
+  chunks: Chunk[],
+  id: string,
+  next: { label?: string; expansion?: string; color?: string },
+): Chunk[] {
+  return chunks.map((chunk) =>
+    chunk.id === id
+      ? {
+          ...chunk,
+          label: next.label !== undefined ? next.label.trim() : chunk.label,
+          expansion:
+            next.expansion !== undefined ? next.expansion.trim() : chunk.expansion,
+          color: next.color !== undefined ? next.color : chunk.color,
+          // Bumping the version is what marks the object as edited for a sync.
+          version: (chunk.version ?? 1) + 1,
+        }
+      : chunk,
+  )
+}
+
+/** Remove a chunk and every ordering entry that referenced it. */
+export function deleteChunkLocal(chunks: Chunk[], id: string): Chunk[] {
+  return chunks
+    .filter((chunk) => chunk.id !== id)
+    .map((chunk) =>
+      chunk.isCategory
+        ? {
+            ...chunk,
+            childOrder: (chunk.childOrder ?? []).filter((child) => child !== id),
+            categoryOrder: (chunk.categoryOrder ?? []).filter((child) => child !== id),
+          }
+        : chunk,
+    )
+}
+
+/** Categories a new chunk can be filed under. */
+export function categoriesOf(chunks: Chunk[]): Chunk[] {
+  return chunks.filter((chunk) => chunk.isCategory && chunk.id !== ROOT_ID)
+}
+
 export function searchChunks(chunks: Chunk[], query: string): Chunk[] {
   const needle = query.trim().toLowerCase()
   const items = chunks.filter((c) => !c.isCategory)

@@ -28,8 +28,12 @@ import {
   loadEncryptionKey,
   loadSyncToken,
   makeExport,
+  categoriesOf,
+  createChunk,
+  deleteChunkLocal,
   parseImport,
   parseSession,
+  updateChunk,
   pullChunks,
   pushChunks,
   saveCache,
@@ -40,6 +44,7 @@ import {
 } from "./chunks"
 import { outputDir } from "./nai"
 import { ChunkGrid } from "./chunkgrid"
+import { ChunkEditorSheet } from "./chunkeditor"
 import { chunkState } from "./prompttokens"
 import { Card, Chip, FieldLabel, StatPill, Well } from "./ui"
 import { ACCENT, PAGE_BG, RADIUS_WELL, WELL_BG } from "./theme"
@@ -69,6 +74,8 @@ export function ChunksPage({
   const [busy, setBusy] = useState(false)
   const [lines, setLines] = useState<string[]>([])
   const [confirmPush, setConfirmPush] = useState(false)
+  // null = closed, "new" = create, otherwise the id being edited.
+  const [editorFor, setEditorFor] = useState<string | null>(null)
 
   // Read once. A useState initializer function is not a form this platform
   // documents, and re-reading Storage on every render would parse the whole
@@ -209,7 +216,46 @@ export function ChunksPage({
         background={PAGE_BG}
         scrollDismissesKeyboard="interactively"
         toolbar={{
-          topBarTrailing: onClose ? [<Button title="完成" action={onClose} />] : [],
+          topBarTrailing: onClose
+            ? [
+                <Button title="新建" systemImage="plus" action={() => setEditorFor("new")} />,
+                <Button title="完成" action={onClose} />,
+              ]
+            : [<Button title="新建" systemImage="plus" action={() => setEditorFor("new")} />],
+        }}
+        sheet={{
+          isPresented: editorFor != null,
+          onChanged: (shown: boolean) => {
+            if (!shown) setEditorFor(null)
+          },
+          content: (
+            <ChunkEditorSheet
+              sessionKey={editorFor ?? ""}
+              chunk={
+                editorFor && editorFor !== "new"
+                  ? cache.find((c) => c.id === editorFor)
+                  : null
+              }
+              categories={categoriesOf(cache)}
+              onSave={(draft) => {
+                const next =
+                  editorFor && editorFor !== "new"
+                    ? updateChunk(cache, editorFor, draft)
+                    : createChunk(cache, draft)
+                setCache(saveCache(next))
+                log(editorFor === "new" ? `✔ 新建「${draft.label}」` : `✔ 已修改「${draft.label}」`)
+              }}
+              onDelete={
+                editorFor && editorFor !== "new"
+                  ? () => {
+                      setCache(saveCache(deleteChunkLocal(cache, editorFor)))
+                      log("✔ 已从本机词库删除")
+                    }
+                  : undefined
+              }
+              onClose={() => setEditorFor(null)}
+            />
+          ),
         }}
         alert={{
           title: mode === "mirror" ? "镜像会删除数据" : "推送到账户",
@@ -355,11 +401,13 @@ export function ChunksPage({
                 text={promptText}
                 scope="library"
                 onToggle={onToggle}
+                onEdit={(chunk) => setEditorFor(chunk.id)}
               />
             )}
             <Text font={11} foregroundStyle="tertiaryLabel">
-              点一下把 chunk 加进「特定」提示词，再点一下取下来。分类可以折叠，折叠状态会记住。
-              新建 / 改名 / 重排请回网页做。
+              点一下把 chunk 加进「特定」提示词，再点一下取下来。长按可以编辑或删除。
+              分类可以折叠，折叠状态会记住。右上角「新建」加自己的 chunk；改完记得推送到账户。
+              新建分类和重排顺序目前还要回网页做。
             </Text>
           </Card>
 

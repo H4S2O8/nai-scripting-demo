@@ -49,14 +49,15 @@ console.log("parse / serialize")
   const dark = chunk("dark-tone", "dark, low key lighting, {{shadows}}")
   const text = P.toggleChunk("1girl, solo", dark)
   const tokens = P.parsePrompt(text)
-  check("plain tags become separate tokens", tokens[0].text === "1girl" && tokens[1].text === "solo")
-  check("the chunk stays one token", tokens.length === 3 && tokens[2].kind === "chunk")
-  check("its label survives", tokens[2].label === "dark-tone")
+  // Free text stays one editable run; only the chunk is indivisible.
+  check("free text stays one run", tokens.length === 2 && tokens[0].text === "1girl, solo")
+  check("the chunk stays one token", tokens[1].kind === "chunk")
+  check("its label survives", tokens[1].label === "dark-tone")
   // This is the property the whole encoding exists for: the expansion has
   // commas in it, and they must not read as tag separators.
   check(
     "commas inside the expansion do not split it",
-    tokens[2].expansion === "dark, low key lighting, {{shadows}}",
+    tokens[1].expansion === "dark, low key lighting, {{shadows}}",
   )
   check("round-trips through serialize", P.serializePrompt(tokens) === text)
   check(
@@ -89,22 +90,65 @@ console.log("toggle")
   const plain = "1girl, watercolor, soft edges"
   check("plain tags count as on", P.chunkState(plain, style) === "on")
   check("toggling off removes just those tags", P.toggleChunk(plain, style) === "1girl")
+  check(
+    "toggling off also undoes a previously expanded chunk",
+    P.toggleChunk("1girl, watercolor, soft edges, solo", style) === "1girl, solo",
+    P.toggleChunk("1girl, watercolor, soft edges, solo", style),
+  )
   check("a partial match is off", P.chunkState("1girl, watercolor", style) === "off")
 }
 
 console.log("expand one token")
 {
+  // The old model split text per tag, so expanding scattered a chunk into a row
+  // of separate chips with nowhere to type between them. It must close back up
+  // into one run instead.
   const dark = chunk("dark-tone", "dark, low key")
   const tokens = P.parsePrompt(P.toggleChunk("1girl", dark))
   const expanded = P.expandToken(tokens, 1)
-  check(
-    "chunk becomes its tags",
-    expanded.length === 3 && expanded[1].text === "dark" && expanded[2].text === "low key",
-  )
-  check("all plain now", expanded.every((t) => t.kind === "text"))
+  check("expansion merges into one editable run", expanded.length === 1, JSON.stringify(expanded))
+  check("with the text either side", expanded[0].text === "1girl, dark, low key", expanded[0].text)
   check("serializes to plain text", P.serializePrompt(expanded) === "1girl, dark, low key")
   check("expanding a text token is a no-op", P.expandToken(expanded, 0) === expanded)
-  check("remove drops one", P.removeToken(expanded, 0).length === 2)
+
+  const middle = P.parsePrompt(P.serializePrompt([
+    { kind: "text", text: "a" },
+    { kind: "chunk", label: "c", expansion: "x, y" },
+    { kind: "text", text: "b" },
+  ]))
+  check("a chunk between two runs merges both sides", P.serializePrompt(P.expandToken(middle, 1)) === "a, x, y, b", P.serializePrompt(P.expandToken(middle, 1)))
+  check("removing it closes the seam", P.serializePrompt(P.removeToken(middle, 1)) === "a, b")
+}
+
+console.log("free-text editing")
+{
+  const tokens = P.parsePrompt(P.serializePrompt([
+    { kind: "text", text: "1girl, solo" },
+    { kind: "chunk", label: "c", expansion: "x, y" },
+  ]))
+  // Typing must not reflow the list, or the cursor jumps mid-word.
+  const typed = P.setText(tokens, 0, "1girl, solo, standing on a ")
+  check("setText edits in place", typed.length === 2 && typed[0].text === "1girl, solo, standing on a ")
+  check("setText leaves the chunk alone", typed[1].kind === "chunk")
+  check("setText on a chunk is refused", P.setText(tokens, 1, "nope") === tokens)
+  check(
+    "commas inside a run are just text",
+    P.parsePrompt(P.serializePrompt(typed))[0].text === "1girl, solo, standing on a",
+  )
+  check("a trailing run is added when the list ends in a chunk", P.withTrailingText(tokens).length === 3)
+  const endsInText = P.parsePrompt(P.serializePrompt([
+    { kind: "chunk", label: "c", expansion: "x" },
+    { kind: "text", text: "tail" },
+  ]))
+  check("and not when it already ends in text", P.withTrailingText(endsInText).length === 2)
+  // Serializing on every keystroke trimmed the run and ate the comma you had
+  // just typed, so the editor holds tokens and serializes once, on commit.
+  const midType = P.setText(tokens, 0, "1girl, solo, ")
+  check("typing keeps a trailing comma and space", midType[0].text === "1girl, solo, ")
+  check("and only trims when serialized", P.serializePrompt(midType).startsWith("1girl, solo"))
+  check("token-level toggle adds", P.toggleChunkIn(midType, chunk("z", "zz")).length === 3)
+  check("token-level toggle is reversible", P.chunkStateIn(P.toggleChunkIn(midType, chunk("z", "zz")), chunk("z", "zz")) === "on")
+  check("textTags splits runs for matching", JSON.stringify(P.textTags(typed)) === JSON.stringify(["1girl", "solo", "standing on a"]))
 }
 
 console.log("free text")
@@ -113,6 +157,7 @@ console.log("free text")
   check("appends tags", text === "1girl, solo, smile", text)
   text = P.addTags(text, "SOLO, blush")
   check("skips duplicates case-insensitively", text === "1girl, solo, smile, blush", text)
+  check("free text with commas survives a round trip", P.addTags("a long phrase, with commas", "") === "a long phrase, with commas")
   const withChunk = P.toggleChunk(text, chunk("rim", "rim lighting"))
   check(
     "adding text after a chunk keeps the chunk",

@@ -12,6 +12,7 @@
 import {
   Button,
   FlowLayout,
+  Group,
   HStack,
   Image,
   RoundedRectangle,
@@ -31,10 +32,12 @@ function ChunkChip({
   chunk,
   on,
   onTap,
+  onEdit,
 }: {
   chunk: Chunk
   on: boolean
   onTap: () => void
+  onEdit?: () => void
 }) {
   const empty = !(chunk.expansion ?? "").trim()
   const color = (chunk.color || "#6B7280") as any
@@ -49,6 +52,17 @@ function ChunkChip({
       <HStack
         spacing={5}
         padding={{ horizontal: 11, vertical: 7 }}
+        contextMenu={
+          onEdit
+            ? {
+                menuItems: (
+                  <Group>
+                    <Button title="编辑" systemImage="pencil" action={onEdit} />
+                  </Group>
+                ),
+              }
+            : undefined
+        }
         background={
           <RoundedRectangle
             cornerRadius={RADIUS_CHIP}
@@ -81,6 +95,7 @@ export function ChunkGrid({
   text,
   scope,
   onToggle,
+  onEdit,
 }: {
   chunks: Chunk[]
   /** The prompt these chunks toggle in and out of. */
@@ -88,6 +103,8 @@ export function ChunkGrid({
   /** Storage scope for the collapsed set. */
   scope: string
   onToggle: (chunk: Chunk) => void
+  /** Long-press to edit. Only the library tab offers this. */
+  onEdit?: (chunk: Chunk) => void
 }) {
   const [collapsed, setCollapsed] = useState<string[]>([])
 
@@ -171,6 +188,7 @@ export function ChunkGrid({
                     chunk={chunk}
                     on={chunkState(text, chunk) === "on"}
                     onTap={() => onToggle(chunk)}
+                    onEdit={onEdit ? () => onEdit(chunk) : undefined}
                   />
                 ))}
               </FlowLayout>

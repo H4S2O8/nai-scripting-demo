@@ -327,6 +327,43 @@ try {
   check("wrong format is rejected", true)
 }
 
+console.log("local authoring")
+{
+  const lib = [
+    { id: C.ROOT_ID, containerId: C.ROOT_ID, label: "Root", expansion: "", color: "", version: 1, isCategory: true, childOrder: [], categoryOrder: ["cat-1"] },
+    { id: "cat-1", containerId: "cc1", label: "Style", expansion: "", color: "#333", version: 1, isCategory: true, childOrder: [], categoryOrder: [] },
+  ]
+
+  const filed = C.createChunk(lib, { label: "Watercolour", expansion: "watercolor, soft edges", categoryId: "cat-1" })
+  const made = filed.find((c) => c.label === "Watercolour")
+  check("the chunk is created", made != null && made.expansion === "watercolor, soft edges")
+  check("with ids of its own", made.id.length > 0 && made.containerId.length > 0 && made.id !== made.containerId)
+  // Ordering lives in the category, so a chunk that is not threaded in shows up
+  // in the picker's unsorted bucket and moves once the account syncs it back.
+  check("and is threaded into its category order", filed.find((c) => c.id === "cat-1").childOrder.includes(made.id))
+  check("grouping puts it under that category", C.groupChunks(filed)[0].items.some((c) => c.id === made.id))
+
+  const loose = C.createChunk(lib, { label: "Loose", expansion: "solo" })
+  const looseChunk = loose.find((c) => c.label === "Loose")
+  check("no category files it under root", loose.find((c) => c.id === C.ROOT_ID).childOrder.includes(looseChunk.id))
+
+  const bare = C.createChunk([], { label: "First", expansion: "solo" })
+  check("a root is created when the library is empty", bare.some((c) => c.id === C.ROOT_ID))
+  check("and the chunk is in its order", bare.find((c) => c.id === C.ROOT_ID).childOrder.length === 1)
+
+  const edited = C.updateChunk(filed, made.id, { expansion: "watercolor" })
+  const after = edited.find((c) => c.id === made.id)
+  check("edit changes the expansion", after.expansion === "watercolor")
+  check("and bumps the version so a sync sees it", after.version === made.version + 1)
+  check("edit leaves other chunks alone", edited.find((c) => c.id === "cat-1").label === "Style")
+
+  const removed = C.deleteChunkLocal(filed, made.id)
+  check("delete removes the chunk", !removed.some((c) => c.id === made.id))
+  check("and its ordering entry", !removed.find((c) => c.id === "cat-1").childOrder.includes(made.id))
+
+  check("categories are listed without the root", C.categoriesOf(filed).length === 1 && C.categoriesOf(filed)[0].id === "cat-1")
+}
+
 console.log("sync planning")
 const remote = [
   { ...sample, remoteId: "r1", containerId: "c1" },
