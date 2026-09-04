@@ -1,15 +1,15 @@
 {
-  "name": "NAI Generate Demo",
+  "name": "NAI Studio",
   "localizedNames": {
-    "zh": "NAI 生图 Demo"
+    "zh": "NAI 生图工作台"
   },
   "icon": "photo.artframe",
   "color": "#7C5CFA",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "runInApp": true,
-  "description": "Minimal NovelAI image generation: persistent token, txt2img, save PNG.",
+  "description": "NovelAI text-to-image workbench: prompts, model, size, sampling parameters, Anlas estimate and local history.",
   "localizedDescriptions": {
-    "zh": "最小 NovelAI 生图：Keychain 存 token、文生图、保存 PNG。"
+    "zh": "NovelAI 文生图工作台：提示词、模型、尺寸、采样参数、Anlas 估算与本地历史。"
   },
   "remoteResource": {
     "url": "https://github.com/H4S2O8/nai-scripting-demo/tree/main",
