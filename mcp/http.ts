@@ -34,9 +34,15 @@ if (!AUTH) {
   )
   process.exit(1)
 }
+// Deliberately NOT fatal, unlike MCP_AUTH_TOKEN above.
+//
+// Starting without the auth secret would expose a money-spending endpoint, so
+// that one has to stop the process. A missing NovelAI token only means
+// generation fails, and token() already says so clearly on each call. Exiting
+// for it turned one mistyped value into a crash loop that took the whole
+// service down — the one thing a bad paste must not be able to do.
 if (!(process.env.NOVELAI_TOKEN ?? "").trim()) {
-  console.error("NOVELAI_TOKEN 没有设置，生图会全部失败。")
-  process.exit(1)
+  console.warn("NOVELAI_TOKEN 未设置：服务照常启动，但生图会失败。")
 }
 
 const PORT = Number(process.env.PORT ?? 8787)
