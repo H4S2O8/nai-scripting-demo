@@ -140,8 +140,27 @@ sudo chown -R root:root /opt/novelai-mcp
 和你的每一条提示词都是明文过网。
 
 **Cloudflare Tunnel（推荐，尤其是国内服务器）** —— 边缘终止 HTTPS，源站一个端口都不用开，
-也不用为 80/443 备案。Zero Trust 后台 → Networks → Tunnels → 你的隧道 → Public Hostname
-加一条，DNS 记录 Cloudflare 会自动建：
+也不用为 80/443 备案。
+
+**如果隧道已经指向 80，最省事的是在现有域名下开一个路径**，Cloudflare 后台一步都不用动：
+把 `nginx-location.conf` 贴进那个已经在服务你域名的 server 块里（通常在 `server_name`
+那行下面），端点就是 `https://你的域名/nai/mcp`。
+
+```bash
+# 插进现有 server 块，然后
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+两个细节不能省：
+
+- **`location ^~ /nai/`** 的 `^~` 让它优先于同一个 server 块里的正则 location。少了它，
+  站点自己的 `location ~ ^/api/...` 之类会先匹配走。
+- **`proxy_pass` 末尾那个斜杠**负责把 `/nai` 前缀剥掉，`/nai/mcp` 才会变成后端的 `/mcp`。
+
+顺带把 `NOVELAI_PUBLIC_URL` 设成 `https://你的域名/nai`，图片直链才对得上。
+
+**或者新开子域名**（要在 Zero Trust 后台 → Networks → Tunnels → 你的隧道 → Public
+Hostname 加一条，DNS 记录自动建）：
 
 | 字段 | 隧道直连 8787 | 复用已有的 nginx |
 | --- | --- | --- |
@@ -149,17 +168,7 @@ sudo chown -R root:root /opt/novelai-mcp
 | Service | `HTTP` → `localhost:8787` | `HTTP` → `localhost:80` |
 | 还需要 | 无 | 装 `nginx-vhost.conf` |
 
-如果隧道已经指向 80、上面还挂着别的站点，走右边那列更省事——后台里和现有条目填一样的
-service，路由交给 nginx 按 Host 分。`nginx-vhost.conf` 就是为此准备的：
-
-```bash
-sudo cp mcp/nginx-vhost.conf /etc/nginx/sites-available/novelai-mcp
-sudo sed -i 's/nai\.asylum\.icu/你的域名/' /etc/nginx/sites-available/novelai-mcp
-sudo ln -sf /etc/nginx/sites-available/novelai-mcp /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-**这个 vhost 必须写精确的 `server_name`。**很多机器上已有的站点是 `server_name _;`，
+走右边那列时**必须写精确的 `server_name`**：很多机器上已有的站点是 `server_name _;`，
 它排在前面就成了 80 端口的默认 server，会把没有精确匹配的 Host 全部吃掉——现象是你的请求
 落到了别的服务上，返回一个看着莫名其妙的 404。
 
