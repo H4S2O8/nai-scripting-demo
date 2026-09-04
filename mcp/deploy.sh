@@ -100,7 +100,10 @@ ReadWritePaths=/var/lib/$SERVICE
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable --now $SERVICE
+  systemctl enable $SERVICE
+  # restart, not `enable --now`: --now is a no-op on an already-running unit,
+  # so redeploying silently kept serving the old build.
+  systemctl restart $SERVICE
   sleep 2
   systemctl is-active $SERVICE"
 
