@@ -46,6 +46,36 @@ else
   fail=1
 fi
 
+cat > "$tmp/dead.ts" <<'TS'
+export function usedInternally(n: number) {
+  return n + 1
+}
+export function alsoUsed() {
+  return usedInternally(1)
+}
+export function strandedExport() {
+  return "nobody calls me"
+}
+TS
+
+# The regression this rule exists for: restructuring dropped the only caller of
+# saveToPhotos, so "save to album" quietly had no entry point while the function
+# still compiled and still exported.
+out=$(python3 dev/check.py "$tmp" 2>&1 || true)
+if echo "$out" | grep -q "strandedExport"; then
+  echo "  ok   catches an export nothing calls"
+else
+  echo "  FAIL missed an export nothing calls"
+  fail=1
+fi
+if echo "$out" | grep -q "usedInternally"; then
+  echo "  FAIL false positive on an export used inside its own file"
+  fail=1
+else
+  echo "  ok   no false positive on internal use"
+fi
+rm "$tmp/dead.ts"
+
 rm "$tmp/bad.tsx"
 if python3 dev/check.py "$tmp" 2>&1 | grep -q "违反 Hooks 规则"; then
   echo "  FAIL false positive on useEffect cleanup / nested returns / braces in strings"

@@ -96,10 +96,6 @@ export function loadAccounts(): AccountSlot[] {
   return [migrated]
 }
 
-export function saveAccounts(slots: AccountSlot[]): AccountSlot[] {
-  return writeSlots(slots)
-}
-
 export function activeId(): string {
   const stored = Storage.get<string>(ACTIVE_KEY)
   const slots = loadAccounts()

@@ -82,5 +82,7 @@ export type Workbench = {
   openCharacters: () => void
   openAccount: () => void
   reuse: (image: GeneratedImage) => void
+  saveImage: (image: GeneratedImage) => void
+  shareImage: (image: GeneratedImage) => void
   toast: (message: string) => void
 }

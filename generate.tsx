@@ -225,6 +225,16 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
             <Spacer />
             <IconButton
               systemImage="square.and.arrow.down"
+              title="存相册"
+              onTap={() => wb.saveImage(current)}
+            />
+            <IconButton
+              systemImage="square.and.arrow.up"
+              title=""
+              onTap={() => wb.shareImage(current)}
+            />
+            <IconButton
+              systemImage="arrow.uturn.backward"
               title=""
               onTap={() => wb.reuse(current)}
               active={params.seed === current.seed}

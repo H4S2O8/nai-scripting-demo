@@ -93,6 +93,16 @@ export function GalleryTab({ wb }: { wb: Workbench }) {
                         menuItems: (
                           <Group>
                             <Button
+                              title="存相册"
+                              systemImage="square.and.arrow.down"
+                              action={() => wb.saveImage(item)}
+                            />
+                            <Button
+                              title="分享"
+                              systemImage="square.and.arrow.up"
+                              action={() => wb.shareImage(item)}
+                            />
+                            <Button
                               title="复用参数"
                               systemImage="arrow.uturn.backward"
                               action={() => wb.reuse(item)}
@@ -136,6 +146,20 @@ export function GalleryTab({ wb }: { wb: Workbench }) {
                 <Button
                   title="复用参数"
                   action={() => wb.reuse(current)}
+                  buttonStyle="bordered"
+                  controlSize="small"
+                  tint={ACCENT}
+                />
+                <Button
+                  title="存相册"
+                  action={() => wb.saveImage(current)}
+                  buttonStyle="bordered"
+                  controlSize="small"
+                  tint={ACCENT}
+                />
+                <Button
+                  title="分享"
+                  action={() => wb.shareImage(current)}
                   buttonStyle="bordered"
                   controlSize="small"
                   tint={ACCENT}

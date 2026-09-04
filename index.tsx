@@ -36,6 +36,7 @@ import {
   fetchAccount,
   generateOne,
   isOpus,
+  saveToPhotos,
   loadToken,
   looksLikeToken,
   maxCharacterPrompts,
@@ -313,6 +314,18 @@ function MainView() {
       list[to] = moved
       patch({ characters: list })
     },
+    saveImage: (image) => {
+      saveToPhotos(image)
+        .then((ok) => toast(ok ? "已保存到相册" : "保存被取消"))
+        .catch((error) =>
+          toast(error instanceof Error ? error.message : "保存失败"),
+        )
+    },
+    shareImage: (image) => {
+      ShareSheet.present([image.path]).catch((error: unknown) =>
+        toast(error instanceof Error ? error.message : "分享失败"),
+      )
+    },
     openViewer: () => setViewerOpen(true),
     openCharacters: () => selection.setValue(TAB_CHARACTERS),
     openAccount: () => setAccountOpen(true),
@@ -380,7 +393,14 @@ function MainView() {
         {
           isPresented: viewerOpen,
           onChanged: setViewerOpen,
-          content: <ViewerSheet image={current} onClose={() => setViewerOpen(false)} />,
+          content: (
+            <ViewerSheet
+              image={current}
+              onSave={wb.saveImage}
+              onShare={wb.shareImage}
+              onClose={() => setViewerOpen(false)}
+            />
+          ),
         },
       ]}
     >
@@ -415,9 +435,13 @@ function MainView() {
 /** Full-bleed viewer for the current result. */
 function ViewerSheet({
   image,
+  onSave,
+  onShare,
   onClose,
 }: {
   image: GeneratedImage | null
+  onSave: (image: GeneratedImage) => void
+  onShare: (image: GeneratedImage) => void
   onClose: () => void
 }) {
   return (
@@ -426,7 +450,23 @@ function ViewerSheet({
         navigationTitle={image ? `seed ${image.seed}` : "预览"}
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
-        toolbar={{ topBarTrailing: [<Button title="完成" action={onClose} />] }}
+        toolbar={{
+          topBarLeading: image
+            ? [
+                <Button
+                  title="存相册"
+                  systemImage="square.and.arrow.down"
+                  action={() => onSave(image)}
+                />,
+                <Button
+                  title="分享"
+                  systemImage="square.and.arrow.up"
+                  action={() => onShare(image)}
+                />,
+              ]
+            : [],
+          topBarTrailing: [<Button title="完成" action={onClose} />],
+        }}
       >
         <VStack spacing={12} padding={14}>
           {image ? (

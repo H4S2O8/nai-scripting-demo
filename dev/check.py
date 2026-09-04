@@ -202,6 +202,43 @@ def _top_level_return_and_hooks(fn: str):
     return first_return, hooks
 
 
+def check_dead_exports(target: pathlib.Path) -> int:
+    """导出了但全项目没人用的符号。
+
+    这条是拿回归换来的：v3.0.0 重构标签页时把「存相册 / 分享」的按钮弄丢了，
+    `saveToPhotos` 还好端端导出着，于是既不报错也没有入口——症状是「功能没了」，
+    而不是「代码坏了」。
+
+    判定标准是「除了定义那一处，全项目（含 dev 里的测试）再没出现过」。第一版写成
+    「在定义它的文件之外出现过」，结果把 isV5、loadKeystore 这些在自己文件里被调用的
+    导出全误报了——放松过头的检查会淹没真信号，收紧过头的会制造噪音，两边都得试。
+    """
+    sources = sorted(target.glob("*.ts")) + sorted(target.glob("*.tsx"))
+    if not sources:
+        return 0
+
+    bodies = {path.name: path.read_text(encoding="utf-8") for path in sources}
+    for extra in sorted((target / "dev").glob("*.mjs")):
+        bodies["dev/" + extra.name] = extra.read_text(encoding="utf-8")
+
+    dead = []
+    for path in sources:
+        src = bodies[path.name]
+        for name in re.findall(r'^export\s+(?:async\s+)?function\s+(\w+)', src, re.M):
+            occurrences = sum(
+                len(re.findall(r'\b' + name + r'\b', body)) for body in bodies.values()
+            )
+            # One occurrence is the definition itself.
+            if occurrences <= 1:
+                dead.append(f"{path.name}: {name}")
+
+    if dead:
+        print("✗ 导出了但没人用（要么接上入口，要么删掉）：")
+        for item in dead:
+            print(f"    {item}")
+    return len(dead)
+
+
 def main() -> int:
     target = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     if not target.is_dir():
@@ -212,6 +249,7 @@ def main() -> int:
         print(f"{target} 下没有 .ts / .tsx —— 是不是该指向同步目录（放 script.json 的那个）？")
         return 2
     fail = sum(check_file(f) for f in files)
+    fail += check_dead_exports(target)
     print(f"\n{'✗ 有 %d 处问题' % fail if fail else '✓ 全部通过'}")
     return 1 if fail else 0
 
