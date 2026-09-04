@@ -49,30 +49,15 @@ cd /opt/novelai-mcp/mcp && npm ci && npm run build
 
 ### 3. systemd
 
-`/etc/systemd/system/novelai-mcp.service`：
+先建一个专用的系统用户——这个服务不需要 root，而一个联网的 Node 进程更不该是 root：
 
-```ini
-[Unit]
-Description=NovelAI MCP server
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/novelai-mcp/mcp
-ExecStart=/usr/bin/node /opt/novelai-mcp/mcp/dist/http.mjs
-Restart=on-failure
-EnvironmentFile=/etc/novelai-mcp.env
-# 这个服务只需要写图片目录
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/novelai-mcp
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin novelai-mcp
+sudo mkdir -p /var/lib/novelai-mcp
+sudo chown novelai-mcp:novelai-mcp /var/lib/novelai-mcp
 ```
 
-`/etc/novelai-mcp.env`（`chmod 600`，里面有两个密钥）：
+`/etc/novelai-mcp.env`：
 
 ```sh
 NOVELAI_TOKEN=pst-你的令牌
@@ -84,9 +69,55 @@ HOST=127.0.0.1
 ```
 
 ```bash
-sudo mkdir -p /var/lib/novelai-mcp && sudo chown $USER /var/lib/novelai-mcp
+sudo chown root:root /etc/novelai-mcp.env
+sudo chmod 600 /etc/novelai-mcp.env
+```
+
+**归 root、0600，服务用户读不到，这是对的**：`EnvironmentFile` 是 systemd 自己（PID 1，
+root）在 fork 之前读的，读完才降权启动进程。所以令牌只在 root 拥有的文件和进程环境里，
+服务用户既不能打开那个文件，被入侵后也拿不到第二份。
+
+`/etc/systemd/system/novelai-mcp.service`：
+
+```ini
+[Unit]
+Description=NovelAI MCP server
+After=network-online.target
+
+[Service]
+Type=simple
+User=novelai-mcp
+Group=novelai-mcp
+WorkingDirectory=/opt/novelai-mcp/mcp
+ExecStart=/usr/bin/node /opt/novelai-mcp/mcp/dist/http.mjs
+Restart=on-failure
+EnvironmentFile=/etc/novelai-mcp.env
+
+# 这个服务只需要往图片目录写，别的什么都不需要
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/novelai-mcp
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
 sudo systemctl enable --now novelai-mcp
 curl localhost:8787/health
+```
+
+代码目录 `/opt/novelai-mcp` 保持 root 拥有、服务用户只读即可——它不需要写自己的代码：
+
+```bash
+sudo chown -R root:root /opt/novelai-mcp
 ```
 
 ### 4. TLS
@@ -144,8 +175,23 @@ nai.你的域名 {
 
 **`novelai_account`** —— 等级、Anlas 余额、Opus 剩余额度。
 
+## 两个令牌，别搞混
+
+| | 在哪 | 谁能看到 | 泄露了怎么办 |
+| --- | --- | --- | --- |
+| `NOVELAI_TOKEN`（`pst-`） | 只在服务器的 `/etc/novelai-mcp.env` | 只有 root 和服务进程 | 去 NovelAI 网页重新签发，旧的立即作废 |
+| `MCP_AUTH_TOKEN` | 服务器 + 手机的 MCP 配置 | 你和手机 | 换一个随机串，两边同时改，不用动 NovelAI |
+
+**手机永远拿不到你的 NovelAI 令牌**，它只有一把通往你自己服务器的钥匙。所以手机丢了、
+或者密钥不小心贴到什么地方了，换 `MCP_AUTH_TOKEN` 就行，NovelAI 那边完全不受影响。
+
+手机 App 里那份 `pst-` 令牌（存在 Keychain 里、直连 NovelAI 出图用的）和这套是两回事，
+互不影响，可以是同一个也可以是两个不同的。
+
 ## 安全
 
+- 服务以专用系统用户运行，不是 root
+- `NOVELAI_TOKEN` 在 root 拥有的 0600 文件里，由 systemd 在降权前读取，服务用户读不到
 - `MCP_AUTH_TOKEN` 用常数时间比较，避免逐字节猜测
 - `/images/` 也要认证，路径用 `basename()` 兜底，穿越不出目录
 - `/health` 不需要认证，只回 `{"ok":true}`，不泄露任何信息
