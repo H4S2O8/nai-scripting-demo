@@ -5,10 +5,14 @@
   },
   "icon": "photo.artframe",
   "color": "#7C5CFA",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "runInApp": true,
   "description": "Minimal NovelAI image generation: persistent token, txt2img, save PNG.",
   "localizedDescriptions": {
     "zh": "最小 NovelAI 生图：Keychain 存 token、文生图、保存 PNG。"
+  },
+  "remoteResource": {
+    "url": "https://github.com/H4S2O8/nai-scripting-demo/tree/main",
+    "autoUpdateInterval": 600
   }
 }
