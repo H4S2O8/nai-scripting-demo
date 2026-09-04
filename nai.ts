@@ -8,6 +8,8 @@
  * the official web client's own requests.
  */
 
+import { expandPrompt } from "./prompttokens"
+
 const IMAGE_HOST = "https://image.novelai.net"
 const TOKEN_KEY = "nai_pst_token"
 const OUTPUT_DIR = "NAI-Studio"
@@ -71,10 +73,30 @@ export const SIZE_PRESETS = [
 
 export type QualityPreset = "standard" | "light" | "none"
 
-export type GenerateParams = {
-  model: string
+/**
+ * One V4+/V5 character caption.
+ *
+ * NovelAI still requires a center for every character even when it is choosing
+ * placement itself; (0.5, 0.5) is the protocol's "you decide" sentinel.
+ */
+export type CharacterPrompt = {
   prompt: string
   negative: string
+  useCoords: boolean
+  x: number
+  y: number
+}
+
+export type GenerateParams = {
+  model: string
+  /** Art style. Kept apart because it changes on a different cadence. */
+  stylePrompt: string
+  /** Who is in the picture, as opposed to what they are doing. */
+  characterPrompt: string
+  /** Everything specific to this one image. */
+  prompt: string
+  negative: string
+  characters: CharacterPrompt[]
   width: number
   height: number
   steps: number
@@ -97,8 +119,11 @@ export type GenerateParams = {
 
 export const DEFAULT_PARAMS: GenerateParams = {
   model: "nai-diffusion-5-full",
+  stylePrompt: "",
+  characterPrompt: "",
   prompt: "1girl, looking at viewer, upper body, soft lighting, detailed eyes",
   negative: "",
+  characters: [],
   width: 832,
   height: 1216,
   steps: 28,
@@ -141,6 +166,11 @@ export function supportsSmea(model: string): boolean {
 /** Variety+ is implemented as a CFG sigma skip; V5 does not expose it. */
 export function supportsVariety(model: string): boolean {
   return !isV5(model)
+}
+
+/** How many character captions the checkpoint accepts. 0 means no support. */
+export function maxCharacterPrompts(model: string): number {
+  return isV5(model) ? 32 : isV4Plus(model) ? 6 : 0
 }
 
 export function supportsNoiseSchedule(model: string): boolean {
@@ -349,9 +379,20 @@ export function mergePrompt(...segments: string[]): string {
   return out.join(", ")
 }
 
-/** The exact positive prompt that will be sent, after quality tags merge in. */
+/**
+ * The exact positive prompt that will be sent.
+ *
+ * The three authoring blocks are concatenated style-first — the same order the
+ * official client uses for its style field — then chunk references are expanded
+ * and the quality tags merged in. Expansion has to happen before mergePrompt,
+ * which splits on commas and would tear a reference apart.
+ */
 export function effectivePrompt(params: GenerateParams): string {
-  const base = params.prompt.trim()
+  const base = mergePrompt(
+    expandPrompt(params.stylePrompt.trim()),
+    expandPrompt(params.characterPrompt.trim()),
+    expandPrompt(params.prompt.trim()),
+  )
   const withQuality = mergePrompt(
     base,
     qualityTags(params.model, params.qualityPreset, base),
@@ -364,9 +405,29 @@ export function effectivePrompt(params: GenerateParams): string {
 /** The exact negative prompt that will be sent, after the UC preset merges in. */
 export function effectiveNegative(params: GenerateParams): string {
   return mergePrompt(
-    params.negative.trim(),
+    expandPrompt(params.negative.trim()),
     ucPresetText(params.model, params.ucPreset),
   )
+}
+
+function clamp01(value: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback
+}
+
+/** Drop empty captions and clamp coordinates before they reach the API. */
+export function activeCharacters(params: GenerateParams): CharacterPrompt[] {
+  const limit = maxCharacterPrompts(params.model)
+  if (limit === 0) return []
+  return (params.characters ?? [])
+    .map((character) => ({
+      prompt: expandPrompt((character.prompt ?? "").trim()),
+      negative: expandPrompt((character.negative ?? "").trim()),
+      useCoords: character.useCoords === true,
+      x: clamp01(Number(character.x), 0.5),
+      y: clamp01(Number(character.y), 0.5),
+    }))
+    .filter((character) => character.prompt.length > 0)
+    .slice(0, limit)
 }
 
 export const MAX_SEED = 0xffffffff
@@ -431,15 +492,33 @@ export function buildPayload(params: GenerateParams, seed: number) {
   }
 
   if (v4Plus) {
-    parameters.use_coords = false
+    const characters = activeCharacters(params)
+    const centersOf = (character: CharacterPrompt) => [
+      { x: character.useCoords ? character.x : 0.5, y: character.useCoords ? character.y : 0.5 },
+    ]
+    const charCaptions = characters.map((character) => ({
+      char_caption: character.prompt,
+      // An empty centers array makes the endpoint return HTTP 500 even when
+      // use_coords is false, so every character carries one.
+      centers: centersOf(character),
+    }))
+    const negativeCaptions = characters.some((character) => character.negative)
+      ? characters.map((character) => ({
+          char_caption: character.negative,
+          centers: centersOf(character),
+        }))
+      : []
+    const useCoords = characters.some((character) => character.useCoords)
+
+    parameters.use_coords = useCoords
     parameters.v4_prompt = {
-      caption: { base_caption: prompt, char_captions: [] },
-      use_coords: false,
+      caption: { base_caption: prompt, char_captions: charCaptions },
+      use_coords: useCoords,
       use_order: true,
     }
     parameters.v4_negative_prompt = {
-      caption: { base_caption: negative, char_captions: [] },
-      use_coords: false,
+      caption: { base_caption: negative, char_captions: negativeCaptions },
+      use_coords: useCoords && negativeCaptions.length > 0,
       use_order: false,
       // Only reachable on V4+, where the modern structured prompt is in use.
       legacy_uc: false,

@@ -24,7 +24,6 @@ import {
   Chunk,
   SyncAccount,
   SyncMode,
-  groupChunks,
   loadCache,
   loadEncryptionKey,
   loadSyncToken,
@@ -40,6 +39,8 @@ import {
   selfTestCodec,
 } from "./chunks"
 import { outputDir } from "./nai"
+import { ChunkGrid } from "./chunkgrid"
+import { chunkState } from "./prompttokens"
 import { Card, Chip, FieldLabel, StatPill, Well } from "./ui"
 import { ACCENT, PAGE_BG, RADIUS_WELL, WELL_BG } from "./theme"
 
@@ -50,10 +51,13 @@ const MODES: { id: SyncMode; label: string; note: string }[] = [
 ]
 
 export function ChunksPage({
-  onInsert,
+  promptText,
+  onToggle,
   onClose,
 }: {
-  onInsert: (chunk: Chunk) => void
+  /** The prompt these chunks toggle in and out of, for the on/off state. */
+  promptText: string
+  onToggle: (chunk: Chunk) => void
   /** Only set when shown as a sheet; as a tab there is nothing to close. */
   onClose?: () => void
 }) {
@@ -78,7 +82,6 @@ export function ChunksPage({
   const log = (line: string) => setLines((prev) => [...prev, line].slice(-200))
 
   const results = useMemo(() => searchChunks(cache, query), [cache, query])
-  const groups = useMemo(() => groupChunks(cache), [cache])
 
   // No fallback to the generation token: these endpoints answer a pst- token
   // with "usage of persistent access tokens is not allowed for this endpoint".
@@ -329,52 +332,34 @@ export function ChunksPage({
                 textInputAutocapitalization="never"
               />
             </Well>
-            {cache.length === 0 ? (
-              <Text font={12} foregroundStyle="tertiaryLabel">
-                还没有 chunk。从账户拉取，或导入 userscript 导出的 JSON。
-              </Text>
-            ) : query.trim() ? (
-              <VStack alignment="leading" spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+            {query.trim() ? (
+              <VStack
+                alignment="leading"
+                spacing={8}
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+              >
                 <FieldLabel text="搜索结果" hint={results.length + " 项"} />
                 <FlowLayout spacing={8}>
                   {results.slice(0, 60).map((chunk) => (
-                    <Chip label={chunk.label || chunk.id} selected={false} onTap={() => onInsert(chunk)} />
+                    <Chip
+                      label={chunk.label || chunk.id}
+                      selected={chunkState(promptText, chunk) === "on"}
+                      onTap={() => onToggle(chunk)}
+                    />
                   ))}
                 </FlowLayout>
               </VStack>
             ) : (
-              <VStack alignment="leading" spacing={12} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-                {groups.map((group) => (
-                  <VStack
-                    alignment="leading"
-                    spacing={6}
-                    frame={{ maxWidth: "infinity", alignment: "leading" }}
-                  >
-                    <FieldLabel
-                      text={group.category ? group.category.label || group.category.id : "未分类"}
-                      hint={group.items.length + " 项"}
-                    />
-                    {group.items.length === 0 ? (
-                      <Text font={11} foregroundStyle="tertiaryLabel">
-                        （空分类）
-                      </Text>
-                    ) : (
-                      <FlowLayout spacing={8}>
-                        {group.items.map((chunk) => (
-                          <Chip
-                            label={chunk.label || chunk.id}
-                            selected={false}
-                            onTap={() => onInsert(chunk)}
-                          />
-                        ))}
-                      </FlowLayout>
-                    )}
-                  </VStack>
-                ))}
-              </VStack>
+              <ChunkGrid
+                chunks={cache}
+                text={promptText}
+                scope="library"
+                onToggle={onToggle}
+              />
             )}
             <Text font={11} foregroundStyle="tertiaryLabel">
-              点一下把该 chunk 的内容追加到提示词。管理（新建 / 改名 / 重排）请回网页做。
+              点一下把 chunk 加进「特定」提示词，再点一下取下来。分类可以折叠，折叠状态会记住。
+              新建 / 改名 / 重排请回网页做。
             </Text>
           </Card>
 

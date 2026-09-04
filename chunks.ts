@@ -46,6 +46,7 @@ const MAGIC = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
 const SYNC_TOKEN_KEY = "nai_sync_token"
 const ENC_KEY_KEY = "nai_encryption_key"
 const CACHE_KEY = "nai.chunks.v1"
+const COLLAPSE_PREFIX = "nai.chunkgroups."
 
 export type Chunk = {
   containerId: string
@@ -933,6 +934,23 @@ export function loadCache(): Chunk[] {
 export function saveCache(chunks: Chunk[]): Chunk[] {
   Storage.set(CACHE_KEY, chunks)
   return chunks
+}
+
+/**
+ * Which category groups are collapsed, remembered per picker.
+ *
+ * Each prompt block gets its own scope: in the art-style block you keep the
+ * style category open and everything else shut, and the character block wants
+ * the opposite. One shared setting would make both wrong.
+ */
+export function loadCollapsed(scope: string): string[] {
+  const raw = Storage.get<string[]>(COLLAPSE_PREFIX + scope)
+  return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : []
+}
+
+export function saveCollapsed(scope: string, ids: string[]): string[] {
+  Storage.set(COLLAPSE_PREFIX + scope, ids)
+  return ids
 }
 
 export type ChunkGroup = { category: Chunk | null; items: Chunk[] }

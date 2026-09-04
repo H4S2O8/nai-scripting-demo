@@ -1,14 +1,16 @@
 /**
  * Full-screen prompt editor.
  *
- * On a portrait phone the keyboard eats half the screen, so editing a prompt
- * inline under six other cards means typing into a three-line slit. Here the
- * field is the page: it gets everything above the keyboard, and the chunk
- * library sits directly underneath, which is where tags actually come from.
+ * Two things drive the layout. The keyboard eats half a portrait phone, so the
+ * prompt gets its own page rather than a three-line slit under six cards. And a
+ * chunk stays one token here instead of spilling nine tags into the field —
+ * you see the name you chose it by, and double-tapping expands it if you
+ * actually want to edit what is inside.
  */
 import {
   Button,
   FlowLayout,
+  Group,
   HStack,
   Image,
   NavigationStack,
@@ -18,58 +20,131 @@ import {
   Text,
   TextField,
   VStack,
-  useMemo,
   useState,
 } from "scripting"
 
-import { Chunk, searchChunks } from "./chunks"
-import { PromptField } from "./workbench"
-import { Chip, FieldLabel } from "./ui"
-import { ACCENT, PAGE_BG, RADIUS_WELL, WELL_BG } from "./theme"
+import { Chunk } from "./chunks"
+import {
+  PromptToken,
+  addTags,
+  expandPrompt,
+  expandToken,
+  parsePrompt,
+  removeToken,
+  serializePrompt,
+  toggleChunk,
+} from "./prompttokens"
+import { ChunkGrid } from "./chunkgrid"
+import { Chip } from "./ui"
+import { ACCENT, CHIP_BG, PAGE_BG, RADIUS_CHIP, RADIUS_WELL, WELL_BG } from "./theme"
+
+function TokenChip({
+  token,
+  onExpand,
+  onRemove,
+}: {
+  token: PromptToken
+  onExpand: () => void
+  onRemove: () => void
+}) {
+  if (token.kind === "text") {
+    return (
+      <HStack
+        spacing={4}
+        padding={{ horizontal: 10, vertical: 6 }}
+        background={<RoundedRectangle cornerRadius={RADIUS_CHIP} fill={CHIP_BG} />}
+        contextMenu={{
+          menuItems: (
+            <Group>
+              <Button title="删除" role="destructive" action={onRemove} />
+            </Group>
+          ),
+        }}
+      >
+        <Text font={13} foregroundStyle="label">
+          {token.text}
+        </Text>
+      </HStack>
+    )
+  }
+
+  return (
+    <HStack
+      spacing={5}
+      padding={{ horizontal: 10, vertical: 6 }}
+      background={
+        <RoundedRectangle cornerRadius={RADIUS_CHIP} fill={{ color: ACCENT, opacity: 0.9 }} />
+      }
+      // Double tap is the shortcut; the context menu is the discoverable path.
+      onTapGesture={{ count: 2, perform: onExpand }}
+      contextMenu={{
+        menuItems: (
+          <Group>
+            <Button title="展开为原文" systemImage="arrow.up.left.and.arrow.down.right" action={onExpand} />
+            <Button title="删除" role="destructive" action={onRemove} />
+          </Group>
+        ),
+      }}
+    >
+      <Image systemName="square.stack.3d.up.fill" font={10} foregroundStyle="white" />
+      <Text font={13} fontWeight="semibold" foregroundStyle="white">
+        {token.label}
+      </Text>
+    </HStack>
+  )
+}
 
 export function PromptEditor({
-  field,
+  title,
+  scope,
   value,
   chunks,
   onChanged,
   onClose,
 }: {
-  field: PromptField
+  title: string
+  /** Storage scope for the chunk picker's collapsed categories. */
+  scope: string
   value: string
   chunks: Chunk[]
   onChanged: (value: string) => void
   onClose: () => void
 }) {
   const [draft, setDraft] = useState(value)
-  const [query, setQuery] = useState("")
+  const [raw, setRaw] = useState(false)
+  const [rawText, setRawText] = useState("")
+  const [entry, setEntry] = useState("")
 
-  const positive = field === "prompt"
-  const results = useMemo(() => searchChunks(chunks, query), [chunks, query])
+  const tokens = parsePrompt(draft)
+  const chunkCount = tokens.filter((token) => token.kind === "chunk").length
 
-  const tags = draft
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
+  const enterRaw = () => {
+    // Raw editing has to show real text, so references expand on the way in and
+    // do not come back — the button says so.
+    setRawText(expandPrompt(draft))
+    setRaw(true)
+  }
 
-  const append = (text: string) => {
-    const existing = tags.map((tag) => tag.toLowerCase())
-    const additions = text
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part && existing.indexOf(part.toLowerCase()) === -1)
-    if (additions.length === 0) return
-    setDraft(tags.concat(additions).join(", "))
+  const leaveRaw = () => {
+    setDraft(addTags("", rawText))
+    setRaw(false)
   }
 
   const commit = () => {
-    onChanged(draft)
+    onChanged(raw ? addTags("", rawText) : draft)
     onClose()
+  }
+
+  const submitEntry = () => {
+    if (!entry.trim()) return
+    setDraft(addTags(draft, entry))
+    setEntry("")
   }
 
   return (
     <NavigationStack>
       <VStack
-        navigationTitle={positive ? "提示词" : "负面提示词"}
+        navigationTitle={title}
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
         spacing={10}
@@ -80,93 +155,106 @@ export function PromptEditor({
           topBarTrailing: [<Button title="完成" action={commit} />],
         }}
       >
-        <VStack
-          alignment="leading"
-          spacing={6}
-          padding={10}
-          frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topLeading" }}
-          background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
-        >
-          <TextField
-            title={positive ? "提示词" : "负面提示词"}
-            value={draft}
-            onChanged={setDraft}
-            prompt={positive ? "1girl, looking at viewer, ..." : "额外不想要的内容"}
-            axis="vertical"
-            lineLimit={{ min: 6, max: 14 }}
-            labelsHidden
-            autofocus
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-          />
-        </VStack>
-
-        <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-          <Text font={11} foregroundStyle="tertiaryLabel">
-            {tags.length} 个 tag · {draft.length} 字符
-          </Text>
-          <Spacer />
-          <Chip
-            label="清空"
-            selected={false}
-            disabled={draft.length === 0}
-            onTap={() => setDraft("")}
-          />
-          <Chip
-            label="去重"
-            selected={false}
-            disabled={tags.length === 0}
-            onTap={() => {
-              const seen: Record<string, boolean> = {}
-              const unique: string[] = []
-              for (const tag of tags) {
-                const key = tag.toLowerCase()
-                if (seen[key]) continue
-                seen[key] = true
-                unique.push(tag)
-              }
-              setDraft(unique.join(", "))
-            }}
-          />
-        </HStack>
-
-        {chunks.filter((c) => !c.isCategory).length > 0 ? (
+        {raw ? (
+          <VStack
+            alignment="leading"
+            spacing={6}
+            padding={10}
+            frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topLeading" }}
+            background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
+          >
+            <TextField
+              title={title}
+              value={rawText}
+              onChanged={setRawText}
+              prompt="逗号分隔的 tag"
+              axis="vertical"
+              lineLimit={{ min: 6, max: 16 }}
+              labelsHidden
+              autofocus
+              autocorrectionDisabled
+              textInputAutocapitalization="never"
+            />
+          </VStack>
+        ) : (
           <VStack
             alignment="leading"
             spacing={8}
-            frame={{ maxWidth: "infinity", maxHeight: 260, alignment: "topLeading" }}
+            padding={10}
+            frame={{ maxWidth: "infinity", maxHeight: 240, alignment: "topLeading" }}
+            background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
           >
-            <HStack
-              spacing={8}
-              padding={{ horizontal: 10, vertical: 7 }}
-              frame={{ maxWidth: "infinity" }}
-              background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
-            >
-              <Image systemName="magnifyingglass" font={12} foregroundStyle={ACCENT} />
-              <TextField
-                title="搜索"
-                value={query}
-                onChanged={setQuery}
-                prompt="搜 chunk"
-                labelsHidden
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-              />
-            </HStack>
-            <ScrollView>
-              <FlowLayout spacing={8}>
-                {results.slice(0, 80).map((chunk) => (
-                  <Chip
-                    label={chunk.label || chunk.id}
-                    selected={false}
-                    onTap={() => append(chunk.expansion || chunk.label)}
-                  />
-                ))}
-              </FlowLayout>
-            </ScrollView>
+            {tokens.length === 0 ? (
+              <Text font={13} foregroundStyle="tertiaryLabel">
+                还是空的。下面输入 tag，或从词库里点选。
+              </Text>
+            ) : (
+              <ScrollView>
+                <FlowLayout spacing={7}>
+                  {tokens.map((token, index) => (
+                    <TokenChip
+                      key={String(index) + (token.kind === "chunk" ? token.label : token.text)}
+                      token={token}
+                      onExpand={() =>
+                        setDraft(serializePrompt(expandToken(tokens, index)))
+                      }
+                      onRemove={() => setDraft(serializePrompt(removeToken(tokens, index)))}
+                    />
+                  ))}
+                </FlowLayout>
+              </ScrollView>
+            )}
           </VStack>
-        ) : (
-          <FieldLabel text="词库是空的" hint="到「词库」标签页拉取" />
+        )}
+
+        <HStack
+          spacing={8}
+          padding={{ horizontal: 10, vertical: 7 }}
+          frame={{ maxWidth: "infinity" }}
+          background={<RoundedRectangle cornerRadius={RADIUS_WELL} fill={WELL_BG} />}
+        >
+          <Image systemName="plus" font={12} foregroundStyle={ACCENT} />
+          <TextField
+            title="添加"
+            value={entry}
+            onChanged={setEntry}
+            onSubmit={submitEntry}
+            prompt={raw ? "原文模式下直接在上面编辑" : "输入 tag，回车加入"}
+            labelsHidden
+            autocorrectionDisabled
+            textInputAutocapitalization="never"
+          />
+        </HStack>
+
+        <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          <Text font={11} foregroundStyle="tertiaryLabel">
+            {raw
+              ? "chunk 已展开为文本，返回后不会还原"
+              : `${tokens.length} 项 · ${chunkCount} 个 chunk · 双击 chunk 展开原文`}
+          </Text>
+          <Spacer />
+          <Chip
+            label={raw ? "返回标签" : "原文"}
+            selected={raw}
+            onTap={() => (raw ? leaveRaw() : enterRaw())}
+          />
+          <Chip
+            label="清空"
+            selected={false}
+            disabled={raw ? rawText.length === 0 : tokens.length === 0}
+            onTap={() => (raw ? setRawText("") : setDraft(""))}
+          />
+        </HStack>
+
+        {raw ? null : (
+          <ScrollView>
+            <ChunkGrid
+              chunks={chunks}
+              text={draft}
+              scope={scope}
+              onToggle={(chunk) => setDraft(toggleChunk(draft, chunk))}
+            />
+          </ScrollView>
         )}
       </VStack>
     </NavigationStack>

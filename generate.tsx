@@ -22,7 +22,8 @@ import {
   VStack,
 } from "scripting"
 
-import { SIZE_PRESETS, modelLabel, rollSeed } from "./nai"
+import { SIZE_PRESETS, maxCharacterPrompts, modelLabel, rollSeed } from "./nai"
+import { summarizePrompt } from "./prompttokens"
 import { CAN_MINIMIZE, VERSION, Workbench } from "./workbench"
 import { Chip, IconButton, PrimaryButton } from "./ui"
 import {
@@ -36,6 +37,57 @@ import {
   WELL_BG,
 } from "./theme"
 
+/** One line of prompt, tappable into the full-screen editor. */
+function PromptRow({
+  icon,
+  label,
+  text,
+  placeholder,
+  onTap,
+  emphasis,
+}: {
+  icon: string
+  label: string
+  text: string
+  placeholder: string
+  onTap: () => void
+  emphasis?: boolean
+}) {
+  const filled = text.trim().length > 0
+  return (
+    <HStack
+      spacing={8}
+      padding={{ horizontal: 11, vertical: 9 }}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      background={
+        <RoundedRectangle
+          cornerRadius={RADIUS_WELL}
+          fill={CARD_BG}
+          stroke={{
+            shapeStyle: emphasis === true ? { color: ACCENT, opacity: 0.35 } : CARD_STROKE,
+            strokeStyle: { lineWidth: 1 },
+          }}
+        />
+      }
+      onTapGesture={onTap}
+    >
+      <Image systemName={icon} font={11} foregroundStyle={ACCENT} />
+      <Text font={11} fontWeight="medium" foregroundStyle="secondaryLabel">
+        {label}
+      </Text>
+      <Text
+        font={12}
+        foregroundStyle={filled ? "label" : "tertiaryLabel"}
+        lineLimit={1}
+      >
+        {filled ? summarizePrompt(text) : placeholder}
+      </Text>
+      <Spacer />
+      <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
+    </HStack>
+  )
+}
+
 export function GenerateTab({ wb }: { wb: Workbench }) {
   const dismiss = Navigation.useDismiss()
   const { params, current, history, busy, progress, quote, account } = wb
@@ -44,7 +96,7 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
     SIZE_PRESETS.find((p) => p.width === params.width && p.height === params.height)
       ?.label ?? `${params.width}×${params.height}`
 
-  const promptPreview = params.prompt.trim() || "点这里写提示词"
+  const characterCount = (params.characters ?? []).filter((c) => c.prompt.trim()).length
 
   const canvas = current ? (
     <VStack
@@ -198,36 +250,32 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
           </ScrollView>
         ) : null}
 
-        {/* Prompt preview — the editor is a page, not a field on this screen. */}
-        <VStack
-          alignment="leading"
-          spacing={4}
-          padding={11}
-          frame={{ maxWidth: "infinity", alignment: "leading" }}
-          background={
-            <RoundedRectangle
-              cornerRadius={RADIUS_WELL}
-              fill={CARD_BG}
-              stroke={{ shapeStyle: CARD_STROKE, strokeStyle: { lineWidth: 1 } }}
-            />
-          }
-          onTapGesture={() => wb.editPrompt("prompt")}
-        >
-          <HStack spacing={6} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-            <Image systemName="text.alignleft" font={11} foregroundStyle={ACCENT} />
-            <Text font={11} fontWeight="medium" foregroundStyle="secondaryLabel">
-              提示词
-            </Text>
-            <Spacer />
-            <Image systemName="chevron.right" font={10} foregroundStyle="tertiaryLabel" />
-          </HStack>
-          <Text
-            font={13}
-            foregroundStyle={params.prompt.trim() ? "label" : "tertiaryLabel"}
-            lineLimit={2}
-          >
-            {promptPreview}
-          </Text>
+        {/* Three blocks, because they change on different cadences: the art
+            style and the character usually stay put while the specific prompt
+            is rewritten every generation. Each opens the same page editor. */}
+        <VStack spacing={6} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          <PromptRow
+            icon="paintpalette"
+            label="艺术风格"
+            text={params.stylePrompt}
+            placeholder="画风、画师、媒介"
+            onTap={() => wb.editPrompt({ kind: "style" })}
+          />
+          <PromptRow
+            icon="person"
+            label="人物"
+            text={params.characterPrompt}
+            placeholder="角色、外貌、服装"
+            onTap={() => wb.editPrompt({ kind: "character" })}
+          />
+          <PromptRow
+            icon="text.alignleft"
+            label="特定"
+            text={params.prompt}
+            placeholder="这一张的动作、构图、场景"
+            onTap={() => wb.editPrompt({ kind: "specific" })}
+            emphasis
+          />
         </VStack>
 
         {/* One row for the things that change between two generations. */}
@@ -295,8 +343,17 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
             <Chip
               label={params.negative.trim() ? "负面 ✓" : "负面"}
               selected={params.negative.trim().length > 0}
-              onTap={() => wb.editPrompt("negative")}
+              onTap={() => wb.editPrompt({ kind: "negative" })}
             />
+            {maxCharacterPrompts(params.model) > 0 ? (
+              <Chip
+                label={
+                  characterCount > 0 ? `角色 ${characterCount}` : "角色"
+                }
+                selected={characterCount > 0}
+                onTap={wb.openCharacters}
+              />
+            ) : null}
           </HStack>
         </ScrollView>
       </VStack>

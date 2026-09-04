@@ -29,6 +29,7 @@ import {
 
 import {
   Account,
+  CharacterPrompt,
   GeneratedImage,
   GenerateParams,
   estimateAnlas,
@@ -36,17 +37,20 @@ import {
   generateOne,
   loadToken,
   looksLikeToken,
+  maxCharacterPrompts,
   modelLabel,
   rollSeed,
 } from "./nai"
 import { Chunk, loadCache } from "./chunks"
+import { toggleChunk } from "./prompttokens"
 import { clearHistory, loadHistory, loadParams, pushHistory, removeHistory, saveParams } from "./store"
-import { PromptField, Workbench } from "./workbench"
+import { EditTarget, Workbench } from "./workbench"
 import { AccountSheet } from "./settings"
 import { ChunksPage } from "./chunkspage"
 import { GenerateTab } from "./generate"
 import { ParamsTab } from "./params"
 import { GalleryTab } from "./gallery"
+import { CharactersTab } from "./characters"
 import { PromptEditor } from "./prompteditor"
 import { StatPill } from "./ui"
 import { CARD_BG, CARD_STROKE, PAGE_BG, RADIUS_CARD } from "./theme"
@@ -56,8 +60,37 @@ const INITIAL_PARAMS = loadParams()
 
 const TAB_GENERATE = 0
 const TAB_PARAMS = 1
-const TAB_GALLERY = 2
-const TAB_CHUNKS = 3
+const TAB_CHARACTERS = 2
+const TAB_GALLERY = 3
+const TAB_CHUNKS = 4
+
+/**
+ * Where the editor writes, what it is called, and which collapsed-category set
+ * its chunk picker uses. Scopes are per block on purpose: the art-style picker
+ * keeps the style category open and the rest shut, and the character picker
+ * wants the opposite.
+ */
+function targetSpec(target: EditTarget, params: GenerateParams) {
+  switch (target.kind) {
+    case "style":
+      return { title: "艺术风格", scope: "style", value: params.stylePrompt }
+    case "character":
+      return { title: "人物", scope: "character", value: params.characterPrompt }
+    case "specific":
+      return { title: "特定提示词", scope: "specific", value: params.prompt }
+    case "negative":
+      return { title: "负面提示词", scope: "negative", value: params.negative }
+    default: {
+      const character = (params.characters ?? [])[target.index]
+      const isPrompt = target.field === "prompt"
+      return {
+        title: `角色 ${target.index + 1}${isPrompt ? "" : " · 负面"}`,
+        scope: isPrompt ? "charprompt" : "charnegative",
+        value: character ? (isPrompt ? character.prompt : character.negative) : "",
+      }
+    }
+  }
+}
 
 function MainView() {
   const selection = useObservable<number>(TAB_GENERATE)
@@ -75,7 +108,7 @@ function MainView() {
 
   const [accountOpen, setAccountOpen] = useState(false)
   const [viewerOpen, setViewerOpen] = useState(false)
-  const [editing, setEditing] = useState<PromptField | null>(null)
+  const [editing, setEditing] = useState<EditTarget | null>(null)
 
   const [toastText, setToastText] = useState("")
   const [toastOn, setToastOn] = useState(false)
@@ -122,8 +155,8 @@ function MainView() {
       toast("请先配置 API Token")
       return
     }
-    if (!params.prompt.trim()) {
-      setEditing("prompt")
+    if (!params.prompt.trim() && !params.stylePrompt.trim() && !params.characterPrompt.trim()) {
+      setEditing({ kind: "specific" })
       toast("提示词不能为空")
       return
     }
@@ -164,31 +197,22 @@ function MainView() {
     }
   }
 
-  /** Append a chunk's tags to one of the two prompts, skipping duplicates. */
-  const insertChunk = (chunk: Chunk, field: PromptField) => {
-    const tag = (chunk.expansion || chunk.label || "").trim()
-    if (!tag) {
-      toast("这个 chunk 是空的")
-      return
-    }
-    const target = field === "prompt" ? params.prompt : params.negative
-    const existing = target
-      .split(",")
-      .map((part) => part.trim().toLowerCase())
-      .filter(Boolean)
-    const additions = tag
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part && existing.indexOf(part.toLowerCase()) === -1)
-    if (additions.length === 0) {
-      toast("已经在提示词里了")
-      return
-    }
-    const merged = target.trim()
-      ? target.trim() + ", " + additions.join(", ")
-      : additions.join(", ")
-    patch(field === "prompt" ? { prompt: merged } : { negative: merged })
-    toast("已加入「" + (chunk.label || chunk.id) + "」")
+  const writeTarget = (target: EditTarget, value: string) => {
+    if (target.kind === "style") return patch({ stylePrompt: value })
+    if (target.kind === "character") return patch({ characterPrompt: value })
+    if (target.kind === "specific") return patch({ prompt: value })
+    if (target.kind === "negative") return patch({ negative: value })
+    patchCharacter(
+      target.index,
+      target.field === "prompt" ? { prompt: value } : { negative: value },
+    )
+  }
+
+  const patchCharacter = (index: number, next: Partial<CharacterPrompt>) => {
+    const list = (params.characters ?? []).slice()
+    if (!list[index]) return
+    list[index] = { ...list[index], ...next }
+    patch({ characters: list })
   }
 
   const wb: Workbench = {
@@ -213,7 +237,6 @@ function MainView() {
       toast("已清空")
     },
     chunks,
-    insertChunk,
     busy,
     progress,
     status,
@@ -221,7 +244,38 @@ function MainView() {
       if (!busy) void generate()
     },
     editPrompt: setEditing,
+    addCharacter: () => {
+      const limit = maxCharacterPrompts(params.model)
+      const list = (params.characters ?? []).slice()
+      if (limit === 0) {
+        toast("当前模型不支持人物 prompt")
+        return
+      }
+      if (list.length >= limit) {
+        toast(`最多 ${limit} 个角色`)
+        return
+      }
+      list.push({ prompt: "", negative: "", useCoords: false, x: 0.5, y: 0.5 })
+      patch({ characters: list })
+      setEditing({ kind: "char", index: list.length - 1, field: "prompt" })
+    },
+    removeCharacter: (index) => {
+      const list = (params.characters ?? []).slice()
+      list.splice(index, 1)
+      patch({ characters: list })
+    },
+    patchCharacter,
+    moveCharacter: (index, delta) => {
+      const list = (params.characters ?? []).slice()
+      const to = index + delta
+      if (to < 0 || to >= list.length) return
+      const moved = list[index]
+      list[index] = list[to]
+      list[to] = moved
+      patch({ characters: list })
+    },
     openViewer: () => setViewerOpen(true),
+    openCharacters: () => selection.setValue(TAB_CHARACTERS),
     openAccount: () => setAccountOpen(true),
     reuse: (image) => {
       patch({
@@ -254,16 +308,17 @@ function MainView() {
         onChanged: (value: boolean) => {
           if (!value) setEditing(null)
         },
-        content: (
+        content: editing ? (
           <PromptEditor
-            field={editing ?? "prompt"}
-            value={editing === "negative" ? params.negative : params.prompt}
+            title={targetSpec(editing, params).title}
+            scope={targetSpec(editing, params).scope}
+            value={targetSpec(editing, params).value}
             chunks={chunks}
-            onChanged={(value) =>
-              patch(editing === "negative" ? { negative: value } : { prompt: value })
-            }
+            onChanged={(value) => writeTarget(editing, value)}
             onClose={() => setEditing(null)}
           />
+        ) : (
+          <Text>—</Text>
         ),
       }}
       sheet={[
@@ -294,11 +349,17 @@ function MainView() {
         <Tab title="参数" systemImage="slider.horizontal.3" value={TAB_PARAMS}>
           <ParamsTab wb={wb} />
         </Tab>
+        <Tab title="人物" systemImage="person.2.fill" value={TAB_CHARACTERS}>
+          <CharactersTab wb={wb} />
+        </Tab>
         <Tab title="素材" systemImage="photo.on.rectangle.angled" value={TAB_GALLERY}>
           <GalleryTab wb={wb} />
         </Tab>
         <Tab title="词库" systemImage="square.grid.2x2" value={TAB_CHUNKS}>
-          <ChunksPage onInsert={(chunk) => insertChunk(chunk, "prompt")} />
+          <ChunksPage
+            promptText={params.prompt}
+            onToggle={(chunk) => patch({ prompt: toggleChunk(params.prompt, chunk) })}
+          />
         </Tab>
       </TabView>
     </VStack>

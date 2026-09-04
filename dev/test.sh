@@ -11,6 +11,9 @@ echo
 echo "== crypto vs reference implementations =="
 node dev/test_crypto.mjs
 echo
+echo "== prompt token model =="
+node dev/test_prompt.mjs
+echo
 echo "== raw DEFLATE vs node zlib =="
 node dev/test_inflate.mjs
 echo

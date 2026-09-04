@@ -4,7 +4,13 @@
  * Everything lives in the script's private Storage domain; the API token is the
  * one exception and stays in the Keychain (see nai.ts).
  */
-import { DEFAULT_PARAMS, GenerateParams, GeneratedImage, fitSize } from "./nai"
+import {
+  CharacterPrompt,
+  DEFAULT_PARAMS,
+  GenerateParams,
+  GeneratedImage,
+  fitSize,
+} from "./nai"
 
 const PARAMS_KEY = "nai.params.v2"
 const HISTORY_KEY = "nai.history.v2"
@@ -23,6 +29,20 @@ function toText(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback
 }
 
+function normalizeCharacters(value: unknown): CharacterPrompt[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item) => item && typeof item === "object")
+    .map((item: any) => ({
+      prompt: toText(item.prompt, ""),
+      negative: toText(item.negative, ""),
+      useCoords: toBool(item.useCoords, false),
+      x: Math.min(1, Math.max(0, toNumber(item.x, 0.5))),
+      y: Math.min(1, Math.max(0, toNumber(item.y, 0.5))),
+    }))
+    .slice(0, 32)
+}
+
 /** Repair state restored from an older release rather than trusting it blindly. */
 export function normalizeParams(raw: Partial<GenerateParams> | null): GenerateParams {
   const value = raw ?? {}
@@ -33,8 +53,11 @@ export function normalizeParams(raw: Partial<GenerateParams> | null): GeneratePa
   const quality = value.qualityPreset
   return {
     model: toText(value.model, DEFAULT_PARAMS.model),
+    stylePrompt: toText(value.stylePrompt, DEFAULT_PARAMS.stylePrompt),
+    characterPrompt: toText(value.characterPrompt, DEFAULT_PARAMS.characterPrompt),
     prompt: toText(value.prompt, DEFAULT_PARAMS.prompt),
     negative: toText(value.negative, DEFAULT_PARAMS.negative),
+    characters: normalizeCharacters(value.characters),
     width: size.width,
     height: size.height,
     steps: Math.min(50, Math.max(1, Math.round(toNumber(value.steps, DEFAULT_PARAMS.steps)))),

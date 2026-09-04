@@ -6,7 +6,13 @@
  */
 import { Script } from "scripting"
 
-import { Account, GenerateParams, GeneratedImage, Quote } from "./nai"
+import {
+  Account,
+  CharacterPrompt,
+  GenerateParams,
+  GeneratedImage,
+  Quote,
+} from "./nai"
 import { Chunk } from "./chunks"
 
 /** Shown in the title bar so an over-the-air update is visible at a glance. */
@@ -27,7 +33,20 @@ export const CAN_MINIMIZE = (() => {
   }
 })()
 
-export type PromptField = "prompt" | "negative"
+/**
+ * Which text the full-screen editor is pointed at.
+ *
+ * The editor lives above the tabs so any tab can open it; this is how they say
+ * what to edit. Each target also picks the storage scope for the chunk
+ * picker's collapsed categories — the art-style picker and the character
+ * picker keep their own shape.
+ */
+export type EditTarget =
+  | { kind: "style" }
+  | { kind: "character" }
+  | { kind: "specific" }
+  | { kind: "negative" }
+  | { kind: "char"; index: number; field: "prompt" | "negative" }
 
 export type Workbench = {
   params: GenerateParams
@@ -44,15 +63,19 @@ export type Workbench = {
   clearImages: () => void
 
   chunks: Chunk[]
-  insertChunk: (chunk: Chunk, field: PromptField) => void
 
   busy: boolean
   progress: { done: number; total: number }
   status: string
   generate: () => void
 
-  editPrompt: (field: PromptField) => void
+  editPrompt: (target: EditTarget) => void
+  addCharacter: () => void
+  removeCharacter: (index: number) => void
+  patchCharacter: (index: number, next: Partial<CharacterPrompt>) => void
+  moveCharacter: (index: number, delta: number) => void
   openViewer: () => void
+  openCharacters: () => void
   openAccount: () => void
   reuse: (image: GeneratedImage) => void
   toast: (message: string) => void
