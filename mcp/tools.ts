@@ -70,12 +70,12 @@ function stamp(): string {
  * 512px JPEG is a few tens of KB and renders immediately; the untouched
  * original stays one URL away.
  */
-function preview(pngPath: string): Buffer | null {
+function preview(pngPath: string, width = 512): Buffer | null {
   const out = pngPath.replace(/\.png$/, ".preview.jpg")
   try {
     execFileSync(
       "ffmpeg",
-      ["-y", "-loglevel", "error", "-i", pngPath, "-vf", "scale=512:-2", "-q:v", "5", out],
+      ["-y", "-loglevel", "error", "-i", pngPath, "-vf", `scale=${width}:-2`, "-q:v", "5", out],
       { stdio: ["ignore", "ignore", "pipe"], timeout: 30_000 },
     )
     const data = readFileSync(out)
@@ -200,6 +200,21 @@ export function buildServer(): McpServer {
           .describe(
             "V4+/V5 per-character captions. Give x and y to pin a character; omit both to let the model place them.",
           ),
+        imageSize: z
+          .enum(["preview", "full"])
+          .optional()
+          .describe(
+            "preview (default) inlines a ~70KB 512px JPEG; full inlines the original PNG, " +
+              "around 2MB of base64 — reliable on wifi, often too slow on cellular. " +
+              "The full-resolution file is always linked either way.",
+          ),
+        previewWidth: z
+          .number()
+          .int()
+          .min(128)
+          .max(2048)
+          .optional()
+          .describe("Width of the inlined preview in pixels. Default 512."),
         returnImage: z
           .boolean()
           .optional()
@@ -296,12 +311,14 @@ export function buildServer(): McpServer {
       const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] =
         [{ type: "text", text: summary }]
       if ((args.returnImage ?? inlineByDefault()) && lastPath) {
-        const small = preview(lastPath)
+        const small =
+          args.imageSize === "full" ? null : preview(lastPath, args.previewWidth ?? 512)
         if (small) {
           content.push({ type: "image", data: small.toString("base64"), mimeType: "image/jpeg" })
         } else if (lastPng) {
-          // No ffmpeg: send the original rather than nothing, and accept that a
-          // slow link may struggle with 2MB of base64.
+          // Either imageSize:"full" was asked for, or ffmpeg is unavailable.
+          // Send the original rather than nothing, and accept that a slow link
+          // may struggle with ~2MB of base64.
           content.push({ type: "image", data: lastPng.toString("base64"), mimeType: "image/png" })
         }
       }
