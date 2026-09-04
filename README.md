@@ -115,9 +115,17 @@ usage of persistent access tokens is not allowed for this endpoint
 所以 Chunks 用的是网页登录会话里的 `auth_token`；`encryption_key` 更是只在登录时
 派生，任何 token 里都没有。两者都在同一个对象里，所以直接整个粘：
 
-在 novelai.net 的浏览器控制台执行 `localStorage.session`，复制整段 JSON，
-回 App 点 Chunks 页的「粘贴网页会话」——`auth_token` 和 `encryption_key` 会一起填好。
-也可以分别手填。
+手机上没有控制台，所以在**电脑浏览器**上取：登录 novelai.net → 打开开发者工具控制台
+（F12 或 ⌘⌥J）→ 执行
+
+```js
+copy(sessionStorage.session || localStorage.session)
+```
+
+整段 JSON 进剪贴板，传到手机后在账号页点「粘贴网页会话」，两个一起填好。也可以分别手填。
+
+用 `copy()` 而不是直接看输出，是因为控制台里求值会带一层外层引号；不过这种双重编码的
+粘贴也能正确解开。
 
 两者都只留在本机 Keychain。`encryption_key` 不出设备，只用于本地解开 keystore；
 发到 NovelAI 的始终只有加密后的密文。

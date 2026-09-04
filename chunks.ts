@@ -218,6 +218,44 @@ export function loadEncryptionKey(): string {
   return (activeAccount()?.encryptionKey ?? "").trim()
 }
 
+/**
+ * Pull both credentials out of a pasted localStorage.session object.
+ *
+ * They are always issued together, so copying the whole object once is both
+ * less work and less error-prone than copying two long opaque strings.
+ */
+export function parseSession(text: string): {
+  authToken: string
+  encryptionKey: string
+} {
+  let parsed: any
+  try {
+    parsed = JSON.parse(text.trim())
+  } catch {
+    throw new Error("剪贴板里不是 JSON。在控制台执行 copy(localStorage.session) 再粘贴。")
+  }
+  // Evaluating `localStorage.session` in a console prints the string with its
+  // quotes, and copying that gives a JSON-encoded JSON string. Unwrap it rather
+  // than making the user notice.
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      throw new Error("剪贴板里是一段文本而不是会话对象。用 copy(localStorage.session)。")
+    }
+  }
+  const inner = parsed?.session ?? parsed
+  const authToken = typeof inner?.auth_token === "string" ? inner.auth_token.trim() : ""
+  const encryptionKey =
+    typeof inner?.encryption_key === "string" ? inner.encryption_key.trim() : ""
+  if (!authToken && !encryptionKey) {
+    throw new Error(
+      "这个 JSON 里没有 auth_token / encryption_key。确认复制的是 session 而不是别的键。",
+    )
+  }
+  return { authToken, encryptionKey }
+}
+
 /* -------------------------------------------------------------------- HTTP */
 
 async function api(

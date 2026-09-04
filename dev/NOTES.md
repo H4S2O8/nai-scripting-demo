@@ -127,6 +127,15 @@ NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传—
 是不可分的一枚。展开 = 换成文本并和左右文本段合并（`mergeAdjacentText`），删除同理，
 这样接缝会自动闭合。
 
+## 逐文件编译发现不了「导出被删掉」
+
+改 `chunks.ts` 时，一次范围替换把 `parseSession` 连带删了，而 `settings.tsx` 还在
+import 它——**运行时点按钮才会炸**。逐个文件跑 esbuild 不会报，因为不 bundle 就不解析
+import。
+
+`dev/test.sh` 现在多一步：`esbuild index.tsx --bundle --external:scripting`，
+把整棵依赖树解析一遍。
+
 ## 同一份状态不要存两份
 
 `ChunksPage` 原本自己存了一份 `cache`，root 也存了一份 `chunks`，提示词编辑器用的是

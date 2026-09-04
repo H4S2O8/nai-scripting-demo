@@ -364,6 +364,28 @@ console.log("local authoring")
   check("categories are listed without the root", C.categoriesOf(filed).length === 1 && C.categoriesOf(filed)[0].id === "cat-1")
 }
 
+console.log("pasting a web session")
+{
+  const session = { auth_token: "web-tok", encryption_key: "enc-key", other: 1 }
+  const direct = C.parseSession(JSON.stringify(session))
+  check("reads both credentials", direct.authToken === "web-tok" && direct.encryptionKey === "enc-key")
+  // Evaluating localStorage.session in a console prints the string with quotes;
+  // copying that yields JSON-encoded JSON.
+  const doubled = C.parseSession(JSON.stringify(JSON.stringify(session)))
+  check("unwraps a double-encoded paste", doubled.authToken === "web-tok")
+  check("accepts a wrapper object", C.parseSession(JSON.stringify({ session })).authToken === "web-tok")
+  check("tolerates surrounding whitespace", C.parseSession("  " + JSON.stringify(session) + "\n").authToken === "web-tok")
+  for (const [name, bad] of [["not json", "hello"], ["a plain string", JSON.stringify("hello")], ["an unrelated object", JSON.stringify({ a: 1 })]]) {
+    let threw = false
+    try {
+      C.parseSession(bad)
+    } catch {
+      threw = true
+    }
+    check(`rejects ${name}`, threw)
+  }
+}
+
 console.log("sync planning")
 const remote = [
   { ...sample, remoteId: "r1", containerId: "c1" },

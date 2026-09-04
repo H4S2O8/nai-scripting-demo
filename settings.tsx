@@ -375,8 +375,9 @@ export function AccountSheet({
                 生图 Token：网页右上角齿轮 → Account → Get Persistent API Token。
               </Text>
               <Text font={13} foregroundStyle="secondaryLabel">
-                另外两个：浏览器控制台执行 localStorage.session，复制整段 JSON，
-                回来点「粘贴网页会话」，两个会一起填好。
+                另外两个：电脑浏览器登录后打开控制台，执行
+                copy(sessionStorage.session || localStorage.session)，
+                整段会进剪贴板；传到手机后点「粘贴网页会话」，两个一起填好。
               </Text>
               <Text font={12} foregroundStyle="tertiaryLabel">
                 词库接口不收 pst- 令牌，会直接回「usage of persistent access tokens is
