@@ -719,3 +719,83 @@ export async function generateOne(
     createdAt: Date.now(),
   }
 }
+
+/* ------------------------------------------------------- save to Photos */
+
+function pad2(value: number): string {
+  return value < 10 ? "0" + value : String(value)
+}
+
+/** EXIF wants `YYYY:MM:DD HH:MM:SS` in local time — colons in the date half. */
+function exifDateString(ms: number): string {
+  const d = new Date(ms)
+  return (
+    `${d.getFullYear()}:${pad2(d.getMonth() + 1)}:${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  )
+}
+
+/** The matching `±HH:MM` offset, so Photos does not re-interpret the time as UTC. */
+function exifOffsetString(ms: number): string {
+  const minutes = -new Date(ms).getTimezoneOffset()
+  const sign = minutes >= 0 ? "+" : "-"
+  const abs = Math.abs(minutes)
+  return `${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`
+}
+
+function baseName(path: string): string {
+  const parts = path.split("/")
+  return parts[parts.length - 1] || "nai.png"
+}
+
+/**
+ * Save one result to the photo library, dated to when it was generated.
+ *
+ * NovelAI's PNG carries no date field, and Photos falls back to the epoch for a
+ * container it cannot date — every saved image lands on 1970-01-01. So stamp
+ * EXIF/TIFF dates onto a temporary copy and hand Photos that.
+ *
+ * The copy is what gets rewritten, never the archived original: re-encoding
+ * through ImageIO is not guaranteed to carry PNG tEXt chunks across, and those
+ * hold NovelAI's generation parameters. If the rewrite fails for any reason we
+ * fall back to saving the original as-is — a wrong date beats no image.
+ */
+export async function saveToPhotos(image: GeneratedImage): Promise<boolean> {
+  const name = baseName(image.path)
+  const stamp = exifDateString(image.createdAt)
+  const offset = exifOffsetString(image.createdAt)
+  const temp = FileManager.temporaryDirectory.replace(/\/+$/, "") + "/" + name
+
+  let source = image.path
+  try {
+    await ImageIO.writeImage({
+      source: image.path,
+      to: temp,
+      metadata: {
+        exif: {
+          DateTimeOriginal: stamp,
+          DateTimeDigitized: stamp,
+          OffsetTime: offset,
+          OffsetTimeOriginal: offset,
+          OffsetTimeDigitized: offset,
+        },
+        tiff: { DateTime: stamp },
+      },
+    })
+    if (FileManager.existsSync(temp)) source = temp
+  } catch {
+    /* keep the original path; the date will be wrong but the save still works */
+  }
+
+  try {
+    return await Photos.savePhoto(source, { fileName: name })
+  } finally {
+    if (source === temp && FileManager.existsSync(temp)) {
+      try {
+        FileManager.removeSync(temp)
+      } catch {
+        /* temporary directory is cleaned by the system anyway */
+      }
+    }
+  }
+}

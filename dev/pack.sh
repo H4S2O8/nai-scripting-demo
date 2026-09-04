@@ -7,5 +7,6 @@ set -e
 cd "$(dirname "$0")/.."
 OUT="NAI-Studio.scripting"
 rm -f "$OUT"
-zip -q -X "$OUT" script.json index.tsx nai.ts store.ts theme.ts ui.tsx settings.tsx
+zip -q -X "$OUT" script.json index.tsx nai.ts store.ts theme.ts ui.tsx \
+  settings.tsx chunks.ts chunkspage.tsx nacl.ts blake2b.ts
 unzip -l "$OUT"

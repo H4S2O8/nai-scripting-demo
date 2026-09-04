@@ -5,11 +5,11 @@
   },
   "icon": "photo.artframe",
   "color": "#7C5CFA",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "runInApp": true,
-  "description": "NovelAI text-to-image workbench: prompts, model, size, sampling parameters, Anlas estimate and local history.",
+  "description": "NovelAI text-to-image workbench with Prompt Chunks sync: prompts, model, size, sampling parameters, Anlas estimate and local history.",
   "localizedDescriptions": {
-    "zh": "NovelAI 文生图工作台：提示词、模型、尺寸、采样参数、Anlas 估算与本地历史。"
+    "zh": "NovelAI 文生图工作台，带 Prompt Chunks 同步：提示词、模型、尺寸、采样参数、Anlas 估算与本地历史。"
   },
   "remoteResource": {
     "url": "https://github.com/H4S2O8/nai-scripting-demo/tree/main",

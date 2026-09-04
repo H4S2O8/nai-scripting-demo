@@ -17,7 +17,8 @@ Scripting 的失败模式是**静默**：写错的写法不报错，只是界面
 | 主界面 present 之后 `Dialog.prompt` 静默失败 | 所有输入都是页面内的 `TextField`，反馈走 `toast` 修饰符 |
 | Hooks 出现在提前 `return` 之后会卡住渲染 | `MainView` 没有提前 return，所有 hooks 在函数顶部 |
 | `useState(fn)` 的惰性初始化未经验证 | 初始参数在模块顶层读一次（`INITIAL_PARAMS`），不依赖惰性初始化 |
-| `contextMenu.menuItems` 需要 `Group` 包裹 | 历史缩略图的删除菜单包在 `<Group>` 里 |
+| `contextMenu.menuItems` 需要 `Group` 包裹 | 历史缩略图的删除菜单包在 `<Group>` 里；alert 的多个按钮同理 |
+| JSX fragment `<>...</>` 未经验证 | 需要多个子节点的地方一律用 `<Group>` |
 
 ### 全局对象 vs 需要 import
 
@@ -30,6 +31,39 @@ Scripting 的失败模式是**静默**：写错的写法不报错，只是界面
 先确认这两个是不是需要显式 import。相关调用都包了 `try/catch` 并 toast 报错，
 所以最坏情况是弹一条错误提示，不会白屏。
 
+## Chunks：没有包管理器时怎么保证密码学是对的
+
+平台没有 npm，`Crypto` 也只有 SHA / HMAC / AES-GCM，所以 secretbox 和 BLAKE2b
+只能自己带。自己带的密码学如果错了，症状是「解密失败」或者更糟——往用户的
+NovelAI 账户里写进解不开的对象。所以这一层不靠读代码判断对错，靠对拷：
+
+- `dev/test_crypto.mjs`：把 `nacl.ts` 和真的 tweetnacl@1.0.3 放一起跑同样的输入，
+  比对密文字节；BLAKE2b 对 RFC 7693 的向量。
+- `dev/test_chunks.mjs`：在 node 里给 Scripting 的全局对象（`Data` / `Crypto` /
+  `UUID` / `Storage` / `Keychain`）搭壳，然后用 tweetnacl + node zlib 复现油猴脚本
+  的编解码，双向对拷 chunk 与 keystore。油猴脚本是对着真服务跑通过的，所以和它
+  逐字节一致，就是我们在没有账户的情况下能拿到的最强证据。
+
+改这两个文件之后必须跑 `./dev/test.sh`。
+
+## 压缩格式那一条为什么要在运行时验
+
+NovelAI 用 raw DEFLATE（fflate）。Apple 的 compression 框架把 raw DEFLATE 叫
+`zlib`，所以 `Data.compressed("zlib")` 理论上就是我们要的东西——但「理论上」在这个
+平台上就是踩坑的开始，而且这个坑是静默的：自己压自己解永远能通过，写出去的对象
+NovelAI 却读不了。
+
+所以探针不是自压自解，而是**解一段由真 raw-DEFLATE 编码器产出的固定样本**
+（`PROBE_RAW_DEFLATE_B64`）。解得出来才认为可用；解不出来就退回写未压缩——格式本身
+允许不带 magic 头。Chunks 页的「自检」按钮会显示当前走的是哪条路。
+
+这是「诊断代码本身要先被验证」那条纪律的直接应用。
+
+## encryption_key 为什么必须让用户粘
+
+它不在 API Token 里，是网页登录时由密码派生出来的。App 拿不到，也不该去拿。
+它存 Keychain，只在本地被 BLAKE2b 哈希后用于解 keystore，不出设备。
+
 ## 尺寸校准的时机
 
 宽高输入**只在失焦或提交时**才 snap 到 64 的倍数。逐键校准会把用户正在输入的
@@ -40,6 +74,16 @@ Scripting 的失败模式是**静默**：写错的写法不报错，只是界面
 `estimateAnlas` 是官方前端公式的移植，不是官方接口返回的报价。Opus 免费判定
 （≤ 1 MP 且 ≤ 28 步）依赖 `/user/data` 读到的 tier，读不到时按付费显示——
 宁可高估也不要让用户以为免费。
+
+## 存相册的日期
+
+NovelAI 的 PNG 没有日期字段，`Photos.savePhoto` 拿到这样的容器会把资产日期落到
+1970-01-01。修法是先用 `ImageIO.writeImage({ source, to, metadata })` 把
+`exif.DateTimeOriginal` / `tiff.DateTime` / `OffsetTime*` 写进一个**临时副本**，
+把副本交给「照片」，然后删掉。
+
+不直接改归档原图：`ImageIO` 重新编码是否原样搬运 PNG 的 tEXt 块没验证过，而
+NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传——日期错了总比存不进去好。
 
 ## 发版
 

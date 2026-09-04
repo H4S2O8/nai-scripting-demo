@@ -24,9 +24,11 @@ TSX + SwiftUI 组件写成。目标是把 NovelAI 网页版的**基础生图页�
 | 参数 | Steps、Prompt Guidance、采样器、Seed（可锁定 / 掷一次 / 随机）、批量 1–8 张 |
 | 参数 · 高级 | Guidance Rescale、噪声调度、Variety+、透明背景、SMEA / SMEA DYN |
 | 历史 | 最近 40 张缩略图，点选回看，长按删除 |
+| Chunks | 提示词卡片上的一行常用 chunk，点一下追加到提示词；右上角进完整的 Chunks 页 |
 | 底栏 | 常驻的 Anlas 估算 + 余额 + 生成按钮 |
 
 右上角头像进「账号」：粘贴 token、验证订阅、看 Anlas 与 Opus 用量、看输出目录。
+右上角格子图标进「Prompt Chunks」，见下一节。
 
 参数的可用性跟着模型走：Variety+ 和噪声调度在 V5 上锁掉（官方 V5 固定 Karras），
 SMEA 只在 V3 系列开放，透明背景只在 V5 开放，「轻量」质量词也只有 V5 有。
@@ -55,7 +57,8 @@ https://github.com/H4S2O8/nai-scripting-demo/tree/main
 把这七个文件放在**同一层**，不要再套目录：
 
 ```
-script.json  index.tsx  nai.ts  store.ts  theme.ts  ui.tsx  settings.tsx
+script.json  index.tsx  nai.ts  store.ts  theme.ts  ui.tsx
+settings.tsx  chunks.ts  chunkspage.tsx  nacl.ts  blake2b.ts
 ```
 
 ## 用法
@@ -66,9 +69,68 @@ script.json  index.tsx  nai.ts  store.ts  theme.ts  ui.tsx  settings.tsx
 4. 出图后可存相册、分享，或锁定 seed 再微调 tag。
 
 图片存在脚本的 `Documents/NAI-Studio/`，保留 NovelAI 写入的 PNG 元数据。
+存相册时会把生成时间写进 EXIF/TIFF 再交给「照片」——NovelAI 的 PNG 不带日期字段，
+不补的话每张都会落在 1970-01-01。补日期只作用于送进相册的临时副本，归档的原图
+不动，免得重编码丢掉 NovelAI 的参数。
 Token 存在系统 Keychain，不写进脚本文件，也只发往 `image.novelai.net`。
 
 国内网络需要系统级代理 / VPN，和访问官网一样。
+
+## Prompt Chunks 同步
+
+NovelAI 的 Prompt Chunks（服务端叫 image prompt macro）在这里可以拉取、浏览、
+一键插进提示词，也能在账户之间同步、和油猴脚本互导。
+
+协议来自
+[novelai-prompt-chunks-sync.user.js](https://github.com/H4S2O8/nai-scripting-demo)
+的逆向结论：每个 chunk / 分类各是 `/user/objects/promptmacros` 下的一个对象，
+`data = base64(magic[16] + nonce[24] + XSalsa20-Poly1305 密文)`，密钥来自
+`/user/keystore`，而 keystore 本身用 `BLAKE2b-256(encryption_key)` 加密。
+
+### 需要 encryption_key
+
+**API Token 推导不出 encryption_key**，它只存在于网页登录会话里。在
+novelai.net 的浏览器控制台执行：
+
+```js
+JSON.parse(localStorage.session).encryption_key
+```
+
+复制结果，粘进 Chunks 页的第一个输入框。它只留在本机 Keychain，只用于本地解密
+keystore，不会发送给任何人（包括 NovelAI——发出去的只有加密后的密文）。
+
+同步用的 Bearer token 默认沿用生图那个 `pst-` token；如果 `/user/keystore`
+返回 401，再单独填一个网页会话的 `auth_token`。
+
+### 三种推送模式
+
+| 模式 | 行为 |
+| --- | --- |
+| 合并 | 只新增账户里没有的 chunk（按 chunk id 判断），不动已有的 |
+| 更新 | 新增 + 用本地内容覆盖同 id 的 |
+| 镜像 | 更新 + **删除**账户里本地没有的，不可撤销，会先弹确认 |
+
+根分类的排序表始终是**合并**而不是覆盖，否则会把目标账户里本地没有的 chunk 从
+排序里挤掉。推送前会先把新密钥写进 keystore 并保存，避免中途失败留下解不开的对象。
+
+### 文件互导
+
+「导出 JSON」写到 `Documents/NAI-Studio/` 并拉起分享面板；「导入文件 / 粘贴导入」
+接受油猴脚本导出的 `novelai-prompt-chunks` 文件，也接受裸的 chunk 数组。两边是同一种格式。
+
+### 密码学实现
+
+Scripting 的 `Crypto` 只有 SHA / HMAC / AES-GCM，没有 BLAKE2b 和 XSalsa20-Poly1305，
+平台也没有包管理器，所以：
+
+- `nacl.ts`：tweetnacl-js 1.0.3 的 secretbox 子集（public domain），逐字节比对过
+- `blake2b.ts`：RFC 7693 参考实现，对过官方测试向量
+- 压缩：NovelAI 用 raw DEFLATE，Apple 的 compression 框架把 raw DEFLATE 叫 "zlib"。
+  这一条**在运行时用一个真 raw-DEFLATE 编码器产出的固定样本验证**，不匹配就退回
+  写未压缩（格式本身允许），Chunks 页的「自检」按钮会告诉你走的是哪条路。
+
+`dev/test_chunks.mjs` 会用 tweetnacl + node zlib 复现油猴脚本的编解码，双向对拷，
+确认线格式一致。
 
 ## 计费
 
@@ -101,10 +163,15 @@ ceil(2.951823174884865e-6 · 像素 + 5.753298233447344e-7 · 像素 · 步数)
 图生图、局部重绘、超分、Director Tools、Vibe Transfer、角色提示词与坐标、
 tag 自动补全、提示词法典。这些是 NovelAI 页面的进阶功能，不属于「基础生图」。
 
+Chunks 目前只做同步与插入，不能在 App 内新建 / 改名 / 重排 chunk——那些回网页做。
+
 ## 开发
 
 ```bash
-python3 dev/check.py .   # 静态检查：组件来源 / 漏 import / hooks 位置
+./dev/test.sh            # 静态检查 + 密码学 + 协议互导，全部离线可跑
+python3 dev/check.py .   # 只跑静态检查：组件来源 / 漏 import / hooks 位置
+node dev/test_crypto.mjs # BLAKE2b 与 secretbox 对比参考实现
+node dev/test_chunks.mjs # chunk / keystore 编解码与油猴脚本互导
 ./dev/pack.sh            # 重新打包 NAI-Studio.scripting
 ```
 
@@ -120,3 +187,5 @@ python3 dev/check.py .   # 静态检查：组件来源 / 漏 import / hooks 位�
 | 429 | 请求太频繁，等一会儿 |
 | timeout | 打开系统代理后再试 |
 | 改了代码手机没变 | `script.json` 的 `version` 没加一 |
+| Chunks 报 keystore 解密失败 | `encryption_key` 不对，重新从网页会话复制 |
+| Chunks 拉取 401 | 该账户的用户对象接口不收 `pst-` token，单独填网页 `auth_token` |

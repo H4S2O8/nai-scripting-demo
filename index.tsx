@@ -52,6 +52,7 @@ import {
   maxDimensionFor,
   modelLabel,
   rollSeed,
+  saveToPhotos,
   snapDimension,
   supportsLightQuality,
   supportsNoiseSchedule,
@@ -68,6 +69,8 @@ import {
   saveParams,
 } from "./store"
 import { AccountSheet } from "./settings"
+import { ChunksPage } from "./chunkspage"
+import { Chunk, loadCache } from "./chunks"
 import { Card, Chip, FieldLabel, SliderRow, StatPill, SwitchRow, Well } from "./ui"
 import {
   ACCENT,
@@ -152,6 +155,8 @@ function MainView() {
   const [status, setStatus] = useState("准备就绪")
 
   const [accountOpen, setAccountOpen] = useState(false)
+  const [chunksOpen, setChunksOpen] = useState(false)
+  const [chunkCache, setChunkCache] = useState<Chunk[]>([])
   const [viewerOpen, setViewerOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
 
@@ -167,6 +172,7 @@ function MainView() {
     const saved = loadToken()
     if (saved) setToken(saved)
     setHistory(loadHistory())
+    setChunkCache(loadCache())
     if (saved && looksLikeToken(saved)) {
       fetchAccount(saved)
         .then(setAccount)
@@ -191,6 +197,31 @@ function MainView() {
   const toast = (message: string) => {
     setToastText(message)
     setToastOn(true)
+  }
+
+  /** Append a chunk's expansion to the prompt, skipping tags already present. */
+  const insertChunk = (chunk: Chunk) => {
+    const tag = (chunk.expansion || chunk.label || "").trim()
+    if (!tag) {
+      toast("这个 chunk 是空的")
+      return
+    }
+    const current = params.prompt.trim()
+    const present = current
+      .split(",")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean)
+    const additions = tag
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part && present.indexOf(part.toLowerCase()) === -1)
+    if (additions.length === 0) {
+      toast("已经在提示词里了")
+      return
+    }
+    const merged = additions.join(", ")
+    patch({ prompt: current ? current + ", " + merged : merged })
+    toast("已加入「" + (chunk.label || chunk.id) + "」")
   }
 
   const applySize = (width: number, height: number) => {
@@ -277,7 +308,7 @@ function MainView() {
   const saveToAlbum = async () => {
     if (!current) return
     try {
-      const ok = await Photos.savePhoto(current.path)
+      const ok = await saveToPhotos(current)
       toast(ok ? "已保存到相册" : "保存被取消")
     } catch (error) {
       toast(error instanceof Error ? error.message : "保存失败")
@@ -335,6 +366,11 @@ function MainView() {
         toolbar={{
           topBarTrailing: [
             <Button
+              systemImage="square.grid.2x2"
+              title="Chunks"
+              action={() => setChunksOpen(true)}
+            />,
+            <Button
               systemImage="person.crop.circle"
               title="账号"
               action={() => setAccountOpen(true)}
@@ -358,6 +394,24 @@ function MainView() {
                 onTokenChanged={setToken}
                 onAccountChanged={setAccount}
                 onClose={() => setAccountOpen(false)}
+              />
+            ),
+          },
+          {
+            isPresented: chunksOpen,
+            onChanged: (value: boolean) => {
+              setChunksOpen(value)
+              // The page writes the local library; pick up whatever it left.
+              if (!value) setChunkCache(loadCache())
+            },
+            content: (
+              <ChunksPage
+                generationToken={token}
+                onInsert={insertChunk}
+                onClose={() => {
+                  setChunksOpen(false)
+                  setChunkCache(loadCache())
+                }}
               />
             ),
           },
@@ -484,7 +538,19 @@ function MainView() {
           </Card>
 
           {/* ---------------------------------------------------- prompt */}
-          <Card title="提示词" systemImage="text.alignleft">
+          <Card
+            title="提示词"
+            systemImage="text.alignleft"
+            trailing={
+              <Button
+                title="Chunks"
+                action={() => setChunksOpen(true)}
+                buttonStyle="borderless"
+                controlSize="small"
+                tint={ACCENT}
+              />
+            }
+          >
             <Well>
               <TextField
                 title="提示词"
@@ -498,6 +564,22 @@ function MainView() {
                 textInputAutocapitalization="never"
               />
             </Well>
+            {chunkCache.filter((c) => !c.isCategory).length > 0 ? (
+              <ScrollView axes="horizontal" scrollIndicator="hidden">
+                <HStack spacing={8}>
+                  {chunkCache
+                    .filter((c) => !c.isCategory)
+                    .slice(0, 24)
+                    .map((chunk) => (
+                      <Chip
+                        label={chunk.label || chunk.id}
+                        selected={false}
+                        onTap={() => insertChunk(chunk)}
+                      />
+                    ))}
+                </HStack>
+              </ScrollView>
+            ) : null}
             <FieldLabel
               text="实际发送"
               hint={promptPreview.length + " 字符"}
