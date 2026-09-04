@@ -1,0 +1,14 @@
+{
+  "name": "NAI Generate Demo",
+  "localizedNames": {
+    "zh": "NAI 生图 Demo"
+  },
+  "icon": "photo.artframe",
+  "color": "#7C5CFA",
+  "version": "1.0.0",
+  "runInApp": true,
+  "description": "Minimal NovelAI image generation: persistent token, txt2img, save PNG.",
+  "localizedDescriptions": {
+    "zh": "最小 NovelAI 生图：Keychain 存 token、文生图、保存 PNG。"
+  }
+}
