@@ -27,6 +27,20 @@ claude mcp add novelai --env NOVELAI_TOKEN=pst-你的令牌 -- node /绝对路�
 
 ## 部署到服务器（HTTP）
 
+有 SSH 的话一条命令搞定：
+
+```bash
+./mcp/deploy.sh <ssh-host>
+```
+
+幂等，改完代码重跑即可。它会建服务用户、同步代码、构建、写 systemd unit、启动，并做健康
+检查。**密钥不经过你本机**：`MCP_AUTH_TOKEN` 在服务器上生成且不打印，`NOVELAI_TOKEN`
+留成占位符由你在服务器上填。服务启动时只绑 `127.0.0.1`，暴露是另一件要你明确决定的事。
+
+下面是这个脚本做的事情，手动部署或排查时对照看。
+
+
+
 ### 1. 生成一个访问密钥
 
 ```bash
@@ -120,10 +134,26 @@ curl localhost:8787/health
 sudo chown -R root:root /opt/novelai-mcp
 ```
 
-### 4. TLS
+### 4. 暴露出去（TLS）
 
-服务本身说的是**明文 HTTP**。公网上必须放在 TLS 反向代理后面，否则访问密钥和你的每一条
-提示词都是明文过网。Caddy 两行搞定：
+服务本身说的是**明文 HTTP**，`HOST` 默认留在 `127.0.0.1`。公网上必须有 TLS，否则访问密钥
+和你的每一条提示词都是明文过网。
+
+**Cloudflare Tunnel（推荐，尤其是国内服务器）** —— 边缘终止 HTTPS，源站一个端口都不用开，
+也不用为 80/443 备案。如果隧道是「令牌式」的（进程带 `--token`、机器上没有 config.yml），
+就在 Zero Trust 后台 → Networks → Tunnels → 你的隧道 → Public Hostname 里加一条：
+
+| 字段 | 值 |
+| --- | --- |
+| Subdomain | `nai` |
+| Domain | 你的域名 |
+| Service | `HTTP` → `localhost:8787` |
+
+DNS 记录 Cloudflare 会自动建。**注意超时**：Cloudflare 对源站有 100 秒的响应超时（524）。
+MCP 的 Streamable HTTP 用 SSE，响应头在收到请求时就发出去了，长时间的生成不受影响；但如果
+真的撞到 524，把 `count` 调小（一次一张）最直接。
+
+**Caddy（自己有公网端口时）**：
 
 ```
 nai.你的域名 {
@@ -131,9 +161,7 @@ nai.你的域名 {
 }
 ```
 
-配了代理就把 `HOST` 留在 `127.0.0.1`，别让 8787 直接暴露到公网。
-
-京东云记得在安全组放行 443，**不要**放行 8787。
+走反代就别让 8787 直接对公网，云厂商安全组只放 443。
 
 ### 5. 手机端连接
 
@@ -141,6 +169,12 @@ nai.你的域名 {
 
 - 端点：`https://nai.你的域名/mcp`
 - 认证：`Authorization: Bearer <MCP_AUTH_TOKEN>`
+
+密钥用这条取（不要让它出现在别处）：
+
+```bash
+ssh <host> 'grep MCP_AUTH_TOKEN /etc/novelai-mcp.env'
+```
 
 连上之后 Assistant 就能调 `novelai_generate_image`，图片默认**内联返回**，直接渲染进对话。
 
