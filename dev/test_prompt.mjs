@@ -148,6 +148,18 @@ console.log("free-text editing")
   check("and only trims when serialized", P.serializePrompt(midType).startsWith("1girl, solo"))
   check("token-level toggle adds", P.toggleChunkIn(midType, chunk("z", "zz")).length === 3)
   check("token-level toggle is reversible", P.chunkStateIn(P.toggleChunkIn(midType, chunk("z", "zz")), chunk("z", "zz")) === "on")
+  // Clearing leaves one empty run; appending after it used to render a
+  // placeholder field above the chunk as well as the intended one below.
+  const cleared = [{ kind: "text", text: "" }]
+  const afterToggle = P.withTrailingText(P.tidy(P.toggleChunkIn(cleared, chunk("z", "zz"))))
+  check(
+    "clear then insert leaves exactly one empty run",
+    afterToggle.filter((t) => t.kind === "text" && t.text.trim() === "").length === 1,
+    JSON.stringify(afterToggle),
+  )
+  check("and it is the trailing one", afterToggle[afterToggle.length - 1].kind === "text")
+  check("with the chunk before it", afterToggle[0].kind === "chunk")
+  check("tidy keeps runs that have content", P.tidy([{ kind: "text", text: "a" }, { kind: "text", text: " " }]).length === 1)
   check("textTags splits runs for matching", JSON.stringify(P.textTags(typed)) === JSON.stringify(["1girl", "solo", "standing on a"]))
 }
 

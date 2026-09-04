@@ -143,6 +143,17 @@ export function setText(
   return out
 }
 
+/**
+ * Drop empty runs.
+ *
+ * Only for structural edits. Running this while typing would delete the field
+ * the moment you cleared it and take the cursor with it, so setText never calls
+ * it — `withTrailingText` puts back the single empty run that earns its place.
+ */
+export function tidy(tokens: PromptToken[]): PromptToken[] {
+  return tokens.filter((token) => token.kind !== "text" || token.text.trim().length > 0)
+}
+
 /** Guarantee somewhere to type: a trailing run, created if the list ends in a chunk. */
 export function withTrailingText(tokens: PromptToken[]): PromptToken[] {
   const last = tokens[tokens.length - 1]
@@ -234,7 +245,9 @@ export function toggleChunkIn(tokens: PromptToken[], chunk: Chunk): PromptToken[
   if (!expansion) return tokens
 
   if (chunkStateIn(tokens, chunk) === "off") {
-    return tokens.concat([{ kind: "chunk", label, expansion }])
+    // tidy first: clearing the prompt leaves an empty run behind, and appending
+    // after it produced a placeholder field above the chunk as well as below.
+    return tidy(tokens).concat([{ kind: "chunk", label, expansion }])
   }
 
   const wanted: Record<string, boolean> = {}

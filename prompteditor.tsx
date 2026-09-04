@@ -37,6 +37,7 @@ import {
   serializePrompt,
   setText,
   chunkStateIn,
+  tidy,
   toggleChunkIn,
   withTrailingText,
 } from "./prompttokens"
@@ -278,8 +279,12 @@ export function PromptEditor({
                         <ChunkPill
                           key={"p" + entry.index}
                           token={entry.token}
-                          onExpand={() => setTokens(withTrailingText(expandToken(tokens, entry.index)))}
-                          onRemove={() => setTokens(withTrailingText(removeToken(tokens, entry.index)))}
+                          onExpand={() =>
+                            setTokens(withTrailingText(tidy(expandToken(tokens, entry.index))))
+                          }
+                          onRemove={() =>
+                            setTokens(withTrailingText(tidy(removeToken(tokens, entry.index))))
+                          }
                         />
                       ))}
                     </FlowLayout>
@@ -316,7 +321,9 @@ export function PromptEditor({
               chunks={chunks}
               text={serialized}
               scope={scope}
-              onToggle={(chunk) => setTokens(withTrailingText(toggleChunkIn(tokens, chunk)))}
+              onToggle={(chunk) =>
+                setTokens(withTrailingText(tidy(toggleChunkIn(tokens, chunk))))
+              }
             />
           </ScrollView>
         )}
