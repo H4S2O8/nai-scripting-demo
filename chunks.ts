@@ -20,9 +20,18 @@
  *             The inner JSON is a secretbox under BLAKE2b-256(encryption_key).
  *             A legacy keystore's iv / data fields must be written back as-is.
  *
- * encryption_key is NOT derivable from an API token — it comes from the web
- * login. The user pastes it once; it stays in the Keychain and is never sent
- * anywhere, only hashed locally to open the keystore.
+ * Both credentials come from the web session, not from the image API:
+ *
+ *   - These endpoints reject persistent (`pst-`) tokens outright, with
+ *     "usage of persistent access tokens is not allowed for this endpoint".
+ *     Confirmed against the live service. A web session `auth_token` is
+ *     required, so the generation token is never used as a fallback here.
+ *   - encryption_key is derived during login and is not in any token at all.
+ *
+ * Both live side by side in localStorage.session, which is why parseSession
+ * exists: one paste beats two error-prone copies. They stay in the Keychain;
+ * encryption_key never leaves the device, it is only hashed locally to open
+ * the keystore.
  */
 import { blake2b256 } from "./blake2b"
 import { secretbox, secretboxOpen } from "./nacl"
@@ -207,6 +216,32 @@ export function saveEncryptionKey(key: string): boolean {
   return Keychain.set(ENC_KEY_KEY, value)
 }
 
+/**
+ * Pull both credentials out of a pasted localStorage.session object.
+ *
+ * They are always issued together, so copying the whole object once is both
+ * less work and less error-prone than copying two long opaque strings.
+ */
+export function parseSession(text: string): {
+  authToken: string
+  encryptionKey: string
+} {
+  let parsed: any
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error("剪贴板里不是 JSON。复制整个 localStorage.session 对象。")
+  }
+  const inner = parsed?.session ?? parsed
+  const authToken = typeof inner?.auth_token === "string" ? inner.auth_token.trim() : ""
+  const encryptionKey =
+    typeof inner?.encryption_key === "string" ? inner.encryption_key.trim() : ""
+  if (!authToken && !encryptionKey) {
+    throw new Error("这个 JSON 里没有 auth_token / encryption_key。")
+  }
+  return { authToken, encryptionKey }
+}
+
 /* -------------------------------------------------------------------- HTTP */
 
 async function api(
@@ -241,9 +276,18 @@ async function api(
     } catch {
       /* body unreadable */
     }
+    const message = String(detail)
+    // The one failure worth spelling out: it looks like an auth problem but no
+    // amount of re-issuing a pst- token will fix it.
+    const hint = /persistent access token/i.test(message)
+      ? " · 这些接口不收 pst- 持久令牌，需要网页会话的 auth_token（见「连接」卡片）"
+      : response.status === 401
+        ? " · auth_token 无效或已过期，重新从网页会话复制"
+        : ""
     const error = new Error(
       `${method} ${path} → ${response.status}` +
-        (detail ? " · " + String(detail).slice(0, 200) : ""),
+        (message ? " · " + message.slice(0, 200) : "") +
+        hint,
     ) as Error & { status?: number }
     error.status = response.status
     throw error

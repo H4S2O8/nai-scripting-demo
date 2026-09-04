@@ -99,26 +99,107 @@ def check_file(path: pathlib.Path) -> int:
             print(f"✗ {path.name}: {why}")
 
     # 4) Hooks 在提前 return 之后
+    #
+    # 判据是「函数体顶层的 return」，靠花括号深度算，不靠缩进：useEffect 的
+    # cleanup return、回调里的守卫 return 都在更深的层级，按缩进认会全部误报。
+    # 扫描时要跳过字符串——UC 预设里就有 "{bad}" 这种带花括号的文本。
     for fn in re.split(r'\n(?=(?:export\s+)?function\s)', code):
         m = re.match(r'(?:export\s+)?function\s+(\w+)', fn)
         if not m:
             continue
-        # 提前 return 可能独占一行，也可能写成 `if (x) return ...` 的内联形式
-        # 独占一行的 return 认 2-4 空格缩进；内联的 `if (x) return` 只认函数顶层的
-        # 2 空格 —— 回调体内也常出现 4 空格的 `if (...) return`，放宽会误报。
-        ret = re.search(r'\n(?: {2,4}return[\s(;<]| {2}if\s*\([^)]*\)\s*return[\s(;<])', fn)
-        if not ret:
+        first_return, hooks = _top_level_return_and_hooks(fn)
+        if first_return is None:
             continue
-        tail = fn[ret.end():]
-        # 左边可能是 x、[a, b] 或 {a}，三种都要认（只认缩进 2 空格的顶层声明，
-        # 回调里定义的 hook 不算）
-        late = re.findall(r'\n  (?:const|let)\s+[\w\[\]{},:\s]+=\s*(use[A-Z]\w*)\s*\(', tail)
-        late += re.findall(r'\n  (use[A-Z]\w*)\s*\(', tail)
+        late = sorted({name for pos, name in hooks if pos > first_return})
         if late:
             fail += 1
             print(f"✗ {path.name}: {m.group(1)}() 在提前 return 之后调用了 "
-                  f"{', '.join(sorted(set(late)))} —— 违反 Hooks 规则")
+                  f"{', '.join(late)} —— 违反 Hooks 规则")
     return fail
+
+
+
+def _body_start(fn: str) -> int:
+    """函数体左花括号的位置。
+
+    不能直接取第一个 "{"：`function View({ items }: Props)` 的解构参数里就有一个，
+    从那里开始数深度会在参数列表结束时就判定函数结束，整条规则静默失效。
+    先跳过参数列表的括号，再找花括号。
+    """
+    open_paren = fn.find("(")
+    if open_paren < 0:
+        return fn.find("{")
+    depth = 0
+    i = open_paren
+    while i < len(fn):
+        if fn[i] == "(":
+            depth += 1
+        elif fn[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return fn.find("{", i)
+        i += 1
+    return -1
+
+
+def _top_level_return_and_hooks(fn: str):
+    """函数体顶层（深度 1）的第一个 return 位置，以及所有顶层 hook 调用。
+
+    返回 (return 的偏移量 or None, [(偏移量, hook 名), ...])。
+    深度按花括号算，字符串与模板字面量内的花括号不计。
+    """
+    body = _body_start(fn)
+    if body < 0:
+        return None, []
+
+    depth = 0
+    i = body
+    n = len(fn)
+    quote = None          # 当前所在字符串的引号字符
+    tmpl = []             # 模板字面量里 ${} 的嵌套深度栈
+    first_return = None
+    hooks = []
+
+    while i < n:
+        c = fn[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            elif quote == "`" and c == "$" and i + 1 < n and fn[i + 1] == "{":
+                tmpl.append(depth)
+                quote = None
+                depth += 1
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if c in "'\"`":
+            quote = c
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if tmpl and depth == tmpl[-1]:
+                tmpl.pop()
+                quote = "`"
+            if depth == 0:
+                break
+        elif depth == 1 and (c == "r" or c == "u"):
+            word = re.match(r'\breturn\b', fn[i:])
+            if word and (i == 0 or not (fn[i - 1].isalnum() or fn[i - 1] in "_.$")):
+                if first_return is None:
+                    first_return = i
+            else:
+                hook = re.match(r'\b(use[A-Z]\w*)\s*\(', fn[i:])
+                if hook and (i == 0 or not (fn[i - 1].isalnum() or fn[i - 1] in "_.$")):
+                    hooks.append((i, hook.group(1)))
+        i += 1
+
+    return first_return, hooks
 
 
 def main() -> int:

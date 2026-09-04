@@ -86,6 +86,24 @@ import {
 
 const CANVAS_HEIGHT = 330
 
+/** Shown in the title bar so an over-the-air update is visible at a glance. */
+const VERSION = (() => {
+  try {
+    return Script.metadata?.version ?? "?"
+  } catch {
+    return "?"
+  }
+})()
+
+/** Minimization is unavailable in some contexts; probe once, not per render. */
+const CAN_MINIMIZE = (() => {
+  try {
+    return Script.supportsMinimization()
+  } catch {
+    return false
+  }
+})()
+
 /** Read once at import: useState's lazy-initializer form is not relied on. */
 const INITIAL_PARAMS = loadParams()
 
@@ -144,6 +162,7 @@ function MenuField({
 }
 
 function MainView() {
+  const dismiss = Navigation.useDismiss()
   const [token, setToken] = useState("")
   const [account, setAccount] = useState<Account | null>(null)
   const [params, setParams] = useState<GenerateParams>(INITIAL_PARAMS)
@@ -180,6 +199,12 @@ function MainView() {
           /* the account chip just stays empty */
         })
     }
+    // Coming back from minimized: the library may have changed in another
+    // instance, and files may have been deleted from the Files app.
+    return Script.onResume(() => {
+      setHistory(loadHistory())
+      setChunkCache(loadCache())
+    })
   }, [])
 
   const quote = useMemo(() => estimateAnlas(params, account), [params, account])
@@ -359,11 +384,25 @@ function MainView() {
   return (
     <NavigationStack>
       <ScrollView
-        navigationTitle="NovelAI"
+        navigationTitle={"NovelAI · v" + VERSION}
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
         scrollDismissesKeyboard="interactively"
         toolbar={{
+          // Presented full screen, so there is no swipe-down to fall back on:
+          // closing and minimizing both need an explicit control.
+          topBarLeading: CAN_MINIMIZE
+            ? [
+                <Button
+                  systemImage="arrow.down.right.and.arrow.up.left"
+                  title="最小化"
+                  action={() => {
+                    void Script.minimize()
+                  }}
+                />,
+                <Button systemImage="xmark" title="关闭" action={() => dismiss()} />,
+              ]
+            : [<Button systemImage="xmark" title="关闭" action={() => dismiss()} />],
           topBarTrailing: [
             <Button
               systemImage="square.grid.2x2"
@@ -406,7 +445,6 @@ function MainView() {
             },
             content: (
               <ChunksPage
-                generationToken={token}
                 onInsert={insertChunk}
                 onClose={() => {
                   setChunksOpen(false)
@@ -953,7 +991,16 @@ function ViewerSheet({
 }
 
 async function run() {
-  await Navigation.present({ element: <MainView /> })
+  // Keep the instance alive if the page is ever dismissed by a swipe (it is
+  // presented full screen, where that gesture does not exist, but the setting
+  // costs nothing and covers a fallback presentation).
+  Script.enableMinimize()
+
+  await Navigation.present({
+    element: <MainView />,
+    modalPresentationStyle: "fullScreen",
+  })
+
   Script.exit()
 }
 

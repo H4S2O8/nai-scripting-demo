@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 echo "== static check =="
 python3 dev/check.py .
 echo
+echo "== the static checker itself =="
+./dev/test_check.sh
+echo
 echo "== crypto vs reference implementations =="
 node dev/test_crypto.mjs
 echo

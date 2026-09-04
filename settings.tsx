@@ -7,6 +7,7 @@ import {
   Image,
   NavigationStack,
   RoundedRectangle,
+  Script,
   ScrollView,
   SecureField,
   Spacer,
@@ -18,6 +19,14 @@ import {
 import { Account, fetchAccount, looksLikeToken, outputDir, saveToken } from "./nai"
 import { Card, StatPill, Well } from "./ui"
 import { ACCENT, ACCENT_GRADIENT, PAGE_BG, RADIUS_WELL } from "./theme"
+
+function appVersion(): string {
+  try {
+    return Script.metadata?.version ?? "?"
+  } catch {
+    return "?"
+  }
+}
 
 export function AccountSheet({
   token,
@@ -163,6 +172,16 @@ export function AccountSheet({
                 国内网络需要系统级代理 / VPN，和访问官网一样。
               </Text>
             </VStack>
+          </Card>
+
+          <Card title="关于" systemImage="info.circle.fill">
+            <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <StatPill label="版本" value={appVersion()} systemImage="number" />
+              <Spacer />
+            </HStack>
+            <Text font={11} foregroundStyle="tertiaryLabel">
+              用远程资源自动更新时，手机上看到的版本号要等一个同步周期才会变。
+            </Text>
           </Card>
 
           <Card title="输出目录" systemImage="folder.fill">

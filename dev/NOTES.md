@@ -85,6 +85,27 @@ NovelAI 的 PNG 没有日期字段，`Photos.savePhoto` 拿到这样的容器会
 不直接改归档原图：`ImageIO` 重新编码是否原样搬运 PNG 的 tEXt 块没验证过，而
 NovelAI 的生成参数就存在 tEXt 里。写失败时回落到原图直传——日期错了总比存不进去好。
 
+## 全屏呈现与最小化
+
+`Navigation.present` 默认是抽屉（sheet）。改成 `modalPresentationStyle: "fullScreen"`
+之后没有下滑关闭手势了，所以**必须**自己提供关闭入口，否则用户被困在里面：
+左上角是「最小化」（`Script.minimize()`，实例继续活着，`Script.onResume` 里刷新
+历史和 chunk 缓存）和「关闭」（`Navigation.useDismiss()`，present 的 promise 兑现后
+走到 `Script.exit()`）。
+
+`Script.supportsMinimization()` 在模块顶层探一次，不支持时只渲染关闭键。
+
+## 检查器自身也要被测
+
+`check.py` 的 Hooks 规则原本按缩进认「提前 return」，结果把 `useEffect` 的 cleanup
+return 判成违规。改成按花括号深度算之后，第一版**静默失效了**——`_body_start` 取了
+第一个 `{`，而 `function View({ items }: Props)` 的解构参数里就有一个，深度在参数
+列表结束时就归零，整条规则再也不会触发。
+
+放松过的检查如果不再抓得住原来的 bug，比没有检查更糟：它会给你一个"通过"的假象。
+所以有了 `dev/test_check.sh`，两个方向都断言：真的提前 return 必须报，cleanup
+return / 回调里的 return / 字符串里的花括号（UC 预设里就有 `{bad}`）必须不报。
+
 ## 发版
 
 1. `python3 dev/check.py .`

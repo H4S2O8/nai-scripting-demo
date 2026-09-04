@@ -27,8 +27,12 @@ TSX + SwiftUI 组件写成。目标是把 NovelAI 网页版的**基础生图页�
 | Chunks | 提示词卡片上的一行常用 chunk，点一下追加到提示词；右上角进完整的 Chunks 页 |
 | 底栏 | 常驻的 Anlas 估算 + 余额 + 生成按钮 |
 
-右上角头像进「账号」：粘贴 token、验证订阅、看 Anlas 与 Opus 用量、看输出目录。
+右上角头像进「账号」：粘贴 token、验证订阅、看 Anlas 与 Opus 用量、看版本号与输出目录。
 右上角格子图标进「Prompt Chunks」，见下一节。
+
+页面是全屏呈现的，左上角两个键：**最小化**（收起界面但脚本继续活着，可以从运行中脚本
+列表回来，状态都还在）和**关闭**（真正退出）。标题栏上写着版本号，用来确认远程资源
+有没有更新到位。
 
 参数的可用性跟着模型走：Variety+ 和噪声调度在 V5 上锁掉（官方 V5 固定 Karras），
 SMEA 只在 V3 系列开放，透明背景只在 V5 开放，「轻量」质量词也只有 V5 有。
@@ -87,20 +91,23 @@ NovelAI 的 Prompt Chunks（服务端叫 image prompt macro）在这里可以拉
 `data = base64(magic[16] + nonce[24] + XSalsa20-Poly1305 密文)`，密钥来自
 `/user/keystore`，而 keystore 本身用 `BLAKE2b-256(encryption_key)` 加密。
 
-### 需要 encryption_key
+### 需要网页会话，不能用 pst- Token
 
-**API Token 推导不出 encryption_key**，它只存在于网页登录会话里。在
-novelai.net 的浏览器控制台执行：
+生图用的 `pst-` 持久令牌在这些接口上**会被直接拒绝**：
 
-```js
-JSON.parse(localStorage.session).encryption_key
+```
+usage of persistent access tokens is not allowed for this endpoint
 ```
 
-复制结果，粘进 Chunks 页的第一个输入框。它只留在本机 Keychain，只用于本地解密
-keystore，不会发送给任何人（包括 NovelAI——发出去的只有加密后的密文）。
+所以 Chunks 用的是网页登录会话里的 `auth_token`；`encryption_key` 更是只在登录时
+派生，任何 token 里都没有。两者都在同一个对象里，所以直接整个粘：
 
-同步用的 Bearer token 默认沿用生图那个 `pst-` token；如果 `/user/keystore`
-返回 401，再单独填一个网页会话的 `auth_token`。
+在 novelai.net 的浏览器控制台执行 `localStorage.session`，复制整段 JSON，
+回 App 点 Chunks 页的「粘贴网页会话」——`auth_token` 和 `encryption_key` 会一起填好。
+也可以分别手填。
+
+两者都只留在本机 Keychain。`encryption_key` 不出设备，只用于本地解开 keystore；
+发到 NovelAI 的始终只有加密后的密文。
 
 ### 三种推送模式
 
@@ -188,4 +195,5 @@ node dev/test_chunks.mjs # chunk / keystore 编解码与油猴脚本互导
 | timeout | 打开系统代理后再试 |
 | 改了代码手机没变 | `script.json` 的 `version` 没加一 |
 | Chunks 报 keystore 解密失败 | `encryption_key` 不对，重新从网页会话复制 |
-| Chunks 拉取 401 | 该账户的用户对象接口不收 `pst-` token，单独填网页 `auth_token` |
+| Chunks 提示 persistent access tokens not allowed | 填的是 `pst-` token，换成网页会话的 `auth_token` |
+| Chunks 拉取 401 | `auth_token` 过期了，重新复制一次 `localStorage.session` |

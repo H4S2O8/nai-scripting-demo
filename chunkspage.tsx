@@ -30,6 +30,7 @@ import {
   loadSyncToken,
   makeExport,
   parseImport,
+  parseSession,
   pullChunks,
   pushChunks,
   saveCache,
@@ -49,11 +50,9 @@ const MODES: { id: SyncMode; label: string; note: string }[] = [
 ]
 
 export function ChunksPage({
-  generationToken,
   onInsert,
   onClose,
 }: {
-  generationToken: string
   onInsert: (chunk: Chunk) => void
   onClose: () => void
 }) {
@@ -80,10 +79,10 @@ export function ChunksPage({
   const results = useMemo(() => searchChunks(cache, query), [cache, query])
   const groups = useMemo(() => groupChunks(cache), [cache])
 
-  // The generation token is the default; a separate one is only needed if the
-  // user object endpoints reject it.
+  // No fallback to the generation token: these endpoints answer a pst- token
+  // with "usage of persistent access tokens is not allowed for this endpoint".
   const account: SyncAccount = {
-    authToken: (syncToken.trim() || generationToken).trim(),
+    authToken: syncToken.trim(),
     encryptionKey: encKey.trim(),
   }
   const ready = account.authToken.length > 0 && account.encryptionKey.length > 0
@@ -106,6 +105,29 @@ export function ChunksPage({
     saveEncryptionKey(encKey)
     log("✔ 已存入 Keychain。")
   }
+
+  const pasteSession = () =>
+    guard("粘贴网页会话", async () => {
+      const text = await Pasteboard.getString()
+      if (!text) {
+        log("剪贴板里没有文本。")
+        return
+      }
+      const session = parseSession(text)
+      if (session.authToken) {
+        setSyncToken(session.authToken)
+        saveSyncToken(session.authToken)
+      }
+      if (session.encryptionKey) {
+        setEncKey(session.encryptionKey)
+        saveEncryptionKey(session.encryptionKey)
+      }
+      log(
+        `✔ 读到 ${session.authToken ? "auth_token" : ""}` +
+          `${session.authToken && session.encryptionKey ? " 和 " : ""}` +
+          `${session.encryptionKey ? "encryption_key" : ""}，已存入 Keychain。`,
+      )
+    })
 
   const runSelfTest = () => {
     try {
@@ -224,6 +246,19 @@ export function ChunksPage({
               />
             }
           >
+            <HStack spacing={10} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Chip
+                label="粘贴网页会话"
+                selected={false}
+                disabled={busy}
+                onTap={() => void pasteSession()}
+              />
+              <Spacer />
+            </HStack>
+            <Text font={11} foregroundStyle="tertiaryLabel">
+              在 novelai.net 控制台执行 localStorage.session，复制整个 JSON 后点上面这个键，
+              auth_token 和 encryption_key 会一起填好。
+            </Text>
             <FieldLabel
               text="encryption_key"
               hint={encKey ? "已保存" : "必填"}
@@ -237,13 +272,13 @@ export function ChunksPage({
                 labelsHidden
               />
             </Well>
-            <FieldLabel text="同步 Token" hint={syncToken ? "自定义" : "沿用生图 Token"} />
+            <FieldLabel text="auth_token" hint={syncToken ? "已保存" : "必填"} />
             <Well padding={8}>
               <SecureField
-                title="同步 Token"
+                title="auth_token"
                 value={syncToken}
                 onChanged={setSyncToken}
-                prompt="留空 = 用生图用的 pst- Token"
+                prompt="网页会话的 auth_token"
                 labelsHidden
               />
             </Well>
@@ -263,10 +298,9 @@ export function ChunksPage({
               <Spacer />
             </HStack>
             <Text font={11} foregroundStyle="tertiaryLabel">
-              encryption_key 不能从 API Token 推导，只有网页登录会话里有。在
-              novelai.net 的浏览器控制台执行
-              JSON.parse(localStorage.session).encryption_key 复制过来。它只留在本机
-              Keychain，仅用于本地解密 keystore，不会发给任何人。
+              这两项都只在网页登录会话里，生图用的 pst- Token 在这里用不了——那些接口会直接回
+              「usage of persistent access tokens is not allowed for this endpoint」。
+              两者都只留在本机 Keychain；encryption_key 不出设备，仅用于本地解开 keystore。
             </Text>
           </Card>
 
@@ -348,7 +382,7 @@ export function ChunksPage({
                 title={busy ? "进行中…" : "从账户拉取"}
                 action={() => {
                   if (ready) void pull()
-                  else log("❌ 先填 encryption_key。")
+                  else log("❌ 先填 auth_token 和 encryption_key。")
                 }}
                 buttonStyle="borderedProminent"
                 controlSize="small"
@@ -374,7 +408,7 @@ export function ChunksPage({
               title="推送到账户"
               action={() => {
                 if (!ready) {
-                  log("❌ 先填 encryption_key。")
+                  log("❌ 先填 auth_token 和 encryption_key。")
                   return
                 }
                 if (cache.length === 0) {
