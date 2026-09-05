@@ -10,8 +10,8 @@
 #
 #   * MCP_AUTH_TOKEN is generated ON THE SERVER and never printed. Read it back
 #     yourself with:  ssh <host> 'sudo grep MCP_AUTH_TOKEN /etc/novelai-mcp.env'
-#   * NOVELAI_TOKEN is left as a placeholder. Fill it in on the server so the
-#     pst- token never passes through a shell history or a terminal log here.
+#   * NOVELAI_TOKENS is left as a placeholder. Fill it in on the server so the
+#     pst- tokens never pass through a shell history or a terminal log here.
 #
 # The service starts bound to 127.0.0.1. Exposing it is a separate, deliberate
 # step — see mcp/README.md for the TLS reverse proxy.
@@ -60,7 +60,7 @@ echo "==> 写配置（首次生成密钥，重跑时保留）"
 ssh "$HOST" "set -e
   if [ ! -f /etc/$SERVICE.env ]; then
     # Generated here so the secret never crosses the deploying machine.
-    printf 'NOVELAI_TOKEN=REPLACE_ME\nMCP_AUTH_TOKEN=%s\nNOVELAI_OUTPUT_DIR=/var/lib/$SERVICE\nPORT=8787\nHOST=127.0.0.1\n' \"\$(openssl rand -hex 32)\" > /etc/$SERVICE.env
+    printf '# 多个账户用逗号或换行分隔，可写成 label=pst-xxx；生图会按剩余额度自动选号。\nNOVELAI_TOKENS=REPLACE_ME\nMCP_AUTH_TOKEN=%s\nNOVELAI_OUTPUT_DIR=/var/lib/$SERVICE\nPORT=8787\nHOST=127.0.0.1\n' \"\$(openssl rand -hex 32)\" > /etc/$SERVICE.env
     echo '   已生成新的 MCP_AUTH_TOKEN'
   else
     echo '   /etc/$SERVICE.env 已存在，保持不变'
@@ -101,8 +101,10 @@ WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
   systemctl enable $SERVICE
-  # restart, not `enable --now`: --now is a no-op on an already-running unit,
+  # restart, not 'enable --now': --now is a no-op on an already-running unit,
   # so redeploying silently kept serving the old build.
+  # Note the single quotes: this whole block is inside a double-quoted string,
+  # so backticks here would be run by the LOCAL shell, comment or not.
   systemctl restart $SERVICE
   sleep 2
   systemctl is-active $SERVICE"
@@ -114,7 +116,9 @@ echo
 echo "部署完成。服务在 127.0.0.1:8787，还没有对外暴露。"
 echo
 echo "还差两步（都在服务器上做，密钥不经过本机）："
-echo "  1. 填 NovelAI 令牌:"
-echo "     ssh $HOST 'sed -i \"s|^NOVELAI_TOKEN=.*|NOVELAI_TOKEN=pst-你的令牌|\" /etc/$SERVICE.env && systemctl restart $SERVICE'"
+echo "  1. 填 NovelAI 令牌（多个用逗号分隔，可加 label=）:"
+echo "     ssh $HOST   # 然后在服务器上编辑 /etc/$SERVICE.env 的 NOVELAI_TOKENS= 那行"
+echo "     # 例: NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy"
+echo "     # 改完: systemctl restart $SERVICE"
 echo "  2. 取访问密钥（配到手机上）:"
 echo "     ssh $HOST 'grep MCP_AUTH_TOKEN /etc/$SERVICE.env'"

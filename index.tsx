@@ -330,6 +330,20 @@ function MainView() {
     openCharacters: () => selection.setValue(TAB_CHARACTERS),
     openAccount: () => setAccountOpen(true),
     reuse: (image) => {
+      if (image.params) {
+        // The whole request, so the result is reproduced rather than
+        // approximated. Restoring only prompt/seed/size/model used to leave
+        // the style and character blocks at whatever the session held, which
+        // silently produced a different picture from the one being reused.
+        patch(image.params)
+        selection.setValue(TAB_GENERATE)
+        const extra = image.params.batch > 1 ? " · 张数 " + image.params.batch : ""
+        toast("已复用完整配置 · seed " + image.seed + extra)
+        return
+      }
+      // Older rows, and images rebuilt from their filename, carry no snapshot.
+      // Say so: silently restoring five of thirty fields is how you end up
+      // wondering why the picture came back different.
       patch({
         prompt: image.prompt,
         seed: image.seed,
@@ -338,7 +352,7 @@ function MainView() {
         model: image.model,
       })
       selection.setValue(TAB_GENERATE)
-      toast("已复用参数 · seed " + image.seed)
+      toast("这张图没有完整记录，只复用了提示词和尺寸 · seed " + image.seed)
     },
     toast,
   }

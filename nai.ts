@@ -756,6 +756,16 @@ export type GeneratedImage = {
   height: number
   prompt: string
   createdAt: number
+  /**
+   * The whole request, so a result can be reproduced rather than approximated.
+   *
+   * The five fields above were what "reuse" restored, which left the style and
+   * character blocks at whatever the session happened to hold — reusing an old
+   * image mixed its prompt with the current style block and quietly produced a
+   * different picture. Optional because rows written by older releases, and
+   * rows rebuilt from a filename, do not have it.
+   */
+  params?: GenerateParams
 }
 
 /** Generate exactly one image. Batches are driven by the caller. */
@@ -821,6 +831,9 @@ export async function generateOne(
     height: params.height,
     prompt: params.prompt.trim(),
     createdAt: Date.now(),
+    // The seed the server actually used, not the 0 that asked for a random
+    // one: a snapshot that cannot reproduce its own image is not a snapshot.
+    params: { ...params, seed: actualSeed },
   }
 }
 

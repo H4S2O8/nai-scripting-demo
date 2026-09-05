@@ -418,5 +418,47 @@ check("every chunk is placed exactly once", groups.reduce((n, g) => n + g.items.
 check("search matches label and expansion", C.searchChunks(library, "blue").length === 1 && C.searchChunks(library, "散装").length === 1)
 check("empty query returns all non-categories", C.searchChunks(library, "  ").length === 2)
 
+console.log("import merging")
+{
+const beforeImport = [
+  { id: C.ROOT_ID, containerId: C.ROOT_ID, label: "Root", expansion: "", color: "", version: 1, isCategory: true, childOrder: ["keep-1"], categoryOrder: [] },
+  { id: "keep-1", containerId: "cc-keep", remoteId: "rr-keep", label: "本地的", expansion: "solo", color: "#111", version: 3, isCategory: false },
+]
+const m1 = C.mergeImport(beforeImport, [
+  { id: "new-1", containerId: "cc-new", label: "新来的", expansion: "1girl", color: "#222", version: 1, isCategory: false },
+])
+// The regression this guards: import used to replace the beforeImport outright, so
+// importing a small character pack threw away everything just pulled.
+check("merge keeps existing chunks", m1.chunks.some((c) => c.id === "keep-1"))
+check("merge adds the imported chunk", m1.added === 1 && m1.chunks.some((c) => c.id === "new-1"))
+check("merge lists the new loose chunk in the root",
+      (m1.chunks.find((c) => c.id === C.ROOT_ID).childOrder ?? []).includes("new-1"))
+
+const m2 = C.mergeImport(beforeImport, [
+  { id: "keep-1", containerId: "cc-OTHER", label: "文件里的", expansion: "2girls", color: "#999", version: 1, isCategory: false },
+])
+const hit = m2.chunks.find((c) => c.id === "keep-1")
+check("conflict takes the file's content", hit.label === "文件里的" && hit.expansion === "2girls")
+check("conflict keeps the server identity", hit.containerId === "cc-keep" && hit.remoteId === "rr-keep")
+check("conflict counts as replaced, not added", m2.added === 0 && m2.replaced === 1)
+
+const m3 = C.mergeImport(beforeImport, [
+  { id: "cat-new", containerId: "cc-cat", label: "分类", expansion: "", color: "#333", version: 1, isCategory: true, childOrder: ["kid-1"], categoryOrder: [] },
+  { id: "kid-1", containerId: "cc-kid", label: "娃", expansion: "cat ears", color: "#333", version: 1, isCategory: false },
+])
+const root3 = m3.chunks.find((c) => c.id === C.ROOT_ID)
+check("imported category is listed in the root", (root3.categoryOrder ?? []).includes("cat-new"))
+check("a claimed child is not also loose", !(root3.childOrder ?? []).includes("kid-1"))
+check("imported pack groups under its category",
+      C.groupChunks(m3.chunks).some((g) => g.category?.id === "cat-new" && g.items.length === 1))
+check("a full backup round-trips",
+      C.mergeImport([], C.makeExport(m3.chunks).chunks).chunks.length === m3.chunks.length)
+
+const minted = C.parseImport(JSON.stringify([{ id: "no-container", label: "x", expansion: "y" }]))
+// An empty containerId would file every such chunk under the same "" keystore
+// key, so a missing one has to be minted rather than defaulted to "".
+check("a missing containerId is minted", (minted[0].containerId ?? "").length > 0)
+}
+
 console.log(failures === 0 ? "\n✓ all chunk checks passed" : `\n✗ ${failures} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)

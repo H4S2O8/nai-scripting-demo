@@ -10,7 +10,9 @@
  * anything public: without TLS the bearer token and every prompt cross the
  * network in the clear.
  *
- *   NOVELAI_TOKEN      required, the pst- token
+ *   NOVELAI_TOKENS     the account pool: several pst- tokens separated by
+ *                      commas or newlines, each optionally "label=token"
+ *   NOVELAI_TOKEN      a single pst- token; still works, folded into the pool
  *   MCP_AUTH_TOKEN     required, the shared secret clients must present
  *   PORT               default 8787
  *   HOST               default 0.0.0.0
@@ -41,8 +43,8 @@ if (!AUTH) {
 // generation fails, and token() already says so clearly on each call. Exiting
 // for it turned one mistyped value into a crash loop that took the whole
 // service down — the one thing a bad paste must not be able to do.
-if (!(process.env.NOVELAI_TOKEN ?? "").trim()) {
-  console.warn("NOVELAI_TOKEN 未设置：服务照常启动，但生图会失败。")
+if (!(process.env.NOVELAI_TOKEN ?? "").trim() && !(process.env.NOVELAI_TOKENS ?? "").trim()) {
+  console.warn("NOVELAI_TOKEN / NOVELAI_TOKENS 都没设置：服务照常启动，但生图会失败。")
 }
 
 const PORT = Number(process.env.PORT ?? 8787)

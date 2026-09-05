@@ -102,9 +102,9 @@ console.log("mcp server over stdio")
   const { tools } = await client.listTools()
   const names = tools.map((t) => t.name).sort()
   check(
-    "exposes the three tools",
+    "exposes every tool",
     JSON.stringify(names) ===
-      JSON.stringify(["novelai_account", "novelai_generate_image", "novelai_list_options"]),
+      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_verify_tags", "novelai_visual_novel"]),
     JSON.stringify(names),
   )
   const gen = tools.find((t) => t.name === "novelai_generate_image")
@@ -238,9 +238,9 @@ console.log("http transport")
   )
   const httpTools = (await httpClient.listTools()).tools.map((t) => t.name).sort()
   check(
-    "the same three tools are served over http",
+    "the same tools are served over http",
     JSON.stringify(httpTools) ===
-      JSON.stringify(["novelai_account", "novelai_generate_image", "novelai_list_options"]),
+      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_verify_tags", "novelai_visual_novel"]),
     JSON.stringify(httpTools),
   )
   const opts = await httpClient.callTool({ name: "novelai_list_options", arguments: {} })

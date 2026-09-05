@@ -29,6 +29,7 @@ import {
   categoriesOf,
   createChunk,
   deleteChunkLocal,
+  mergeImport,
   parseImport,
   updateChunk,
   pullChunks,
@@ -172,9 +173,9 @@ export function ChunksPage({
         return
       }
       const text = FileManager.readAsStringSync(picked[0])
-      const chunks = parseImport(text)
-      onChunksChanged(saveCache(chunks))
-      log(`✔ 导入 ${chunks.length} 个对象到本地库。`)
+      const merged = mergeImport(chunks, parseImport(text))
+      onChunksChanged(saveCache(merged.chunks))
+      log(`✔ 新增 ${merged.added} 个，覆盖 ${merged.replaced} 个。`)
       log("这一步只写本地；要同步到账户请用下面的推送。")
     })
 
@@ -185,9 +186,9 @@ export function ChunksPage({
         log("剪贴板里没有文本。")
         return
       }
-      const chunks = parseImport(text)
-      onChunksChanged(saveCache(chunks))
-      log(`✔ 导入 ${chunks.length} 个对象到本地库。`)
+      const merged = mergeImport(chunks, parseImport(text))
+      onChunksChanged(saveCache(merged.chunks))
+      log(`✔ 新增 ${merged.added} 个，覆盖 ${merged.replaced} 个。`)
     })
 
   return (

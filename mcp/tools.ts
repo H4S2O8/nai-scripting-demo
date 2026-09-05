@@ -7,7 +7,10 @@
  * over the network (http.ts) both send exactly the payload the app sends.
  *
  * Configuration is by environment:
- *   NOVELAI_TOKEN          required, the pst- persistent API token
+ *   NOVELAI_TOKENS         the account pool: several pst- tokens separated by
+ *                          commas or newlines, each optionally "label=token".
+ *                          Generation picks per request — see pool.ts.
+ *   NOVELAI_TOKEN          a single pst- token; folded into the same pool
  *   NOVELAI_OUTPUT_DIR     optional, defaults to ~/Pictures/NovelAI
  *   NOVELAI_INLINE_IMAGES  "0" to make returnImage default to off
  *   NOVELAI_PUBLIC_URL     optional, base URL that serves NOVELAI_OUTPUT_DIR
@@ -31,7 +34,6 @@ import {
   buildPayload,
   effectiveNegative,
   effectivePrompt,
-  estimateAnlas,
   fetchAccount,
   fitSize,
   maxCharacterPrompts,
@@ -39,19 +41,22 @@ import {
   rollSeed,
 } from "../nai"
 import { firstPng } from "./zip"
+import { Lookup, lookup } from "./tags"
 import { r2Config, uploadToR2 } from "./r2"
+import { Lease, acquire, fail, poolSize, refreshAll, status, succeed } from "./pool"
+import {
+  MODES,
+  Mode,
+  TRANSLUCENT_TAG,
+  composePrompt,
+  describeMode,
+  modeParams,
+  pngHasAlpha,
+} from "./modes"
 
 const IMAGE_HOST = "https://image.novelai.net"
 
-function token(): string {
-  const value = (process.env.NOVELAI_TOKEN ?? "").trim()
-  if (!value) {
-    throw new Error(
-      "NOVELAI_TOKEN 没有设置。在 NovelAI 网页的 设置 → Account → Get Persistent API Token 取一个 pst- 开头的令牌。",
-    )
-  }
-  return value
-}
+
 
 function outputDir(): string {
   const dir = process.env.NOVELAI_OUTPUT_DIR?.trim() || join(homedir(), "Pictures", "NovelAI")
@@ -94,12 +99,24 @@ function stamp(): string {
  * 512px JPEG is a few tens of KB and renders immediately; the untouched
  * original stays one URL away.
  */
-function preview(pngPath: string, width = 512): Buffer | null {
-  const out = pngPath.replace(/\.png$/, ".preview.jpg")
+function preview(
+  pngPath: string,
+  width = 512,
+  // A JPEG has no alpha channel, so previewing a cut-out asset as one shows
+  // the transparency as solid black. Those modes ask for a PNG instead and
+  // pay the extra bytes.
+  format: "jpeg" | "png" = "jpeg",
+): Buffer | null {
+  const png = format === "png"
+  const out = pngPath.replace(/\.png$/, png ? ".preview.png" : ".preview.jpg")
   try {
     execFileSync(
       "ffmpeg",
-      ["-y", "-loglevel", "error", "-i", pngPath, "-vf", `scale=${width}:-2`, "-q:v", "5", out],
+      [
+        "-y", "-loglevel", "error", "-i", pngPath, "-vf", `scale=${width}:-2`,
+        ...(png ? [] : ["-q:v", "5"]),
+        out,
+      ],
       { stdio: ["ignore", "ignore", "pipe"], timeout: 30_000 },
     )
     const data = readFileSync(out)
@@ -108,6 +125,42 @@ function preview(pngPath: string, width = 512): Buffer | null {
   } catch {
     return null
   }
+}
+
+type InlineContent = { type: "image"; data: string; mimeType: string }
+
+/**
+ * The image to put in the conversation, or null for none.
+ *
+ * Shared by every generation tool so the token-cost behaviour is identical
+ * across them: an inlined image is resent on every later turn, so the default
+ * is a small preview and "none" is a real option while iterating.
+ */
+function inlineImage(
+  imageSize: "preview" | "full" | "none" | undefined,
+  png: Buffer | null,
+  path: string,
+  previewWidth?: number,
+  keepAlpha = false,
+): InlineContent | null {
+  const wants = imageSize === "none" ? false : imageSize != null || inlineByDefault()
+  if (!wants || !path) return null
+  const small =
+    imageSize === "full"
+      ? null
+      : preview(path, previewWidth ?? defaultPreviewWidth(), keepAlpha ? "png" : "jpeg")
+  if (small) {
+    return {
+      type: "image",
+      data: small.toString("base64"),
+      mimeType: keepAlpha ? "image/png" : "image/jpeg",
+    }
+  }
+  // Either imageSize:"full" was asked for, or ffmpeg is unavailable. Send the
+  // original rather than nothing, and accept that a slow link may struggle
+  // with ~2MB of base64.
+  if (png) return { type: "image", data: png.toString("base64"), mimeType: "image/png" }
+  return null
 }
 
 async function readError(response: Response): Promise<string> {
@@ -136,14 +189,14 @@ async function readError(response: Response): Promise<string> {
 }
 
 /** One image. Batches are the caller's business, as in the app. */
-async function generateOne(params: GenerateParams, seed: number) {
+async function generateOne(params: GenerateParams, seed: number, authToken: string) {
   const payload = buildPayload(params, seed)
   const actualSeed = (payload.parameters as { seed: number }).seed
 
   const response = await fetch(`${IMAGE_HOST}/ai/generate-image`, {
     method: "POST",
     headers: {
-      Authorization: "Bearer " + token(),
+      Authorization: "Bearer " + authToken,
       "Content-Type": "application/json",
       Accept: "application/zip, application/octet-stream",
     },
@@ -177,6 +230,42 @@ async function generateOne(params: GenerateParams, seed: number) {
   const remote = config ? await uploadToR2(config, path, png) : null
 
   return { path, seed: actualSeed, bytes: png.length, png, remote }
+}
+
+/**
+ * Generate one image, moving to the next account when this one is the problem.
+ *
+ * Each image takes its own lease rather than one lease per batch: a four-image
+ * request then spreads across the pool instead of draining one account, which
+ * is the whole point of having several.
+ *
+ * Attempts are capped at the pool size — once every account has refused, the
+ * request is not going to succeed, and retrying past that only burns quota.
+ */
+async function generateWithFailover(params: GenerateParams, seed: number) {
+  const attempts = Math.max(1, poolSize())
+  let lastError: unknown = new Error("没有可用账户")
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let lease: Lease
+    try {
+      lease = await acquire(params)
+    } catch (error) {
+      // acquire() only fails when nothing can serve the request, and its
+      // message already explains why for every account. Nothing to retry.
+      throw error
+    }
+    try {
+      const made = await generateOne(params, seed, lease.account.token)
+      succeed(lease)
+      return { ...made, account: lease.account.label, free: lease.free, cost: lease.cost }
+    } catch (error) {
+      lastError = error
+      // A bad prompt fails the same way everywhere; only an account-specific
+      // failure is worth handing to someone else.
+      if (!fail(lease, error).retryable) throw error
+    }
+  }
+  throw lastError
 }
 
 /** Inline images by default: getting the picture into the conversation is the point. */
@@ -322,16 +411,30 @@ export function buildServer(): McpServer {
         }
       }
 
-      const results: { path: string; seed: number; remote: string | null }[] = []
+      const results: {
+        path: string
+        seed: number
+        remote: string | null
+        account: string
+        free: boolean
+        cost: number
+      }[] = []
       let lastPng: Buffer | null = null
-    let lastPath = ""
+      let lastPath = ""
       try {
         for (let i = 0; i < (args.count ?? 1); i++) {
           const seed = params.seed > 0 ? params.seed : rollSeed()
-          const made = await generateOne(params, seed)
-          results.push({ path: made.path, seed: made.seed, remote: made.remote })
+          const made = await generateWithFailover(params, seed)
+          results.push({
+            path: made.path,
+            seed: made.seed,
+            remote: made.remote,
+            account: made.account,
+            free: made.free,
+            cost: made.cost,
+          })
           lastPng = made.png
-        lastPath = made.path
+          lastPath = made.path
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -350,11 +453,17 @@ export function buildServer(): McpServer {
         }
       }
 
-      const quote = estimateAnlas(params)
+      // Reported from the leases rather than from estimateAnlas(params) alone:
+      // without an account that helper cannot know about the Opus free tier, so
+      // it used to quote a price for images that in fact cost nothing.
+      const spent = results.reduce((sum, r) => sum + r.cost, 0)
+      const servedBy = Array.from(new Set(results.map((r) => r.account)))
       const summary = [
         `${results.length} 张 · ${modelLabel(params.model)} · ${params.width}×${params.height} · ${params.steps} 步`,
         `seed: ${results.map((r) => r.seed).join(", ")}`,
-        `预计扣费: ${quote.total} Anlas（Opus 账户在 1 MP / 28 步以内不扣）`,
+        spent === 0
+          ? `扣费: 0（走 Opus 免费额度）· 账户: ${servedBy.join("、")}`
+          : `扣费: ${spent} Anlas · 账户: ${servedBy.join("、")}`,
         `实际发送的提示词: ${effectivePrompt(params)}`,
         `负面: ${effectiveNegative(params) || "（无）"}`,
         "",
@@ -368,19 +477,9 @@ export function buildServer(): McpServer {
         [{ type: "text", text: summary }]
       const wantsImage =
         args.imageSize === "none" ? false : (args.returnImage ?? inlineByDefault())
-      if (wantsImage && lastPath) {
-        const small =
-          args.imageSize === "full"
-            ? null
-            : preview(lastPath, args.previewWidth ?? defaultPreviewWidth())
-        if (small) {
-          content.push({ type: "image", data: small.toString("base64"), mimeType: "image/jpeg" })
-        } else if (lastPng) {
-          // Either imageSize:"full" was asked for, or ffmpeg is unavailable.
-          // Send the original rather than nothing, and accept that a slow link
-          // may struggle with ~2MB of base64.
-          content.push({ type: "image", data: lastPng.toString("base64"), mimeType: "image/png" })
-        }
+      if (wantsImage) {
+        const inline = inlineImage(args.imageSize, lastPng, lastPath, args.previewWidth)
+        if (inline) content.push(inline)
       }
       sweepLocal()
       return { content }
@@ -431,31 +530,99 @@ export function buildServer(): McpServer {
   server.registerTool(
     "novelai_account",
     {
-      title: "NovelAI subscription status",
-      description: "Tier, Anlas balance, and remaining Opus allowance for the configured token.",
+      title: "NovelAI account pool",
+      description:
+        "Subscription state of every configured account: tier, Anlas, remaining Opus " +
+        "allowance, and which ones are currently in cooldown. Tokens are never returned.",
       inputSchema: {},
     },
     async () => {
       try {
-        const account = await fetchAccount(token())
+        await refreshAll(true)
+        const accounts = status()
+        if (accounts.length === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text:
+                  "没有配置任何账户。设置 NOVELAI_TOKENS（多个用逗号或换行分隔，可写成 " +
+                  "label=pst-xxx），或 NOVELAI_TOKEN（单个）。",
+              },
+            ],
+          }
+        }
+        const totals = {
+          accounts: accounts.length,
+          usable: accounts.filter((a) => a.active && a.cooldownSeconds === 0).length,
+          anlas: accounts.reduce((sum, a) => sum + (a.anlas ?? 0), 0),
+        }
         return {
+          content: [
+            { type: "text", text: JSON.stringify({ totals, accounts }, null, 2) },
+          ],
+        }
+      } catch (error) {
+        return {
+          isError: true,
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  tier: account.tierName,
-                  active: account.active,
-                  anlas: account.anlas ?? null,
-                  opusPercentRemaining: account.opusPercent ?? null,
-                  expiresAt: account.expiresAt ?? null,
-                },
-                null,
-                2,
-              ),
+              text: "账户查询失败：" + (error instanceof Error ? error.message : String(error)),
             },
           ],
         }
+      }
+    },
+  )
+
+  server.registerTool(
+    "novelai_verify_tags",
+    {
+      title: "Check whether NovelAI knows these tags",
+      description:
+        "Look character, artist or concept names up in NovelAI's own tag index and " +
+        "report how much training data stands behind each one. Use this before " +
+        "putting a name in a prompt or a tag library.\n" +
+        "\n" +
+        "IMPORTANT — the underlying endpoint is a FUZZY autocomplete, so a response " +
+        "is not evidence. Querying nonsense returns confident-looking neighbours. " +
+        "This tool therefore reports `kind`:\n" +
+        "  exact     — the name is itself a tag. Use `match`.\n" +
+        "  qualified — the name is a tag once the series is appended, e.g. " +
+        "'ganyu' resolves to 'ganyu (genshin impact)'. Use `match`, not the bare name.\n" +
+        "  none      — nothing matched. The model does not know this name; the " +
+        "`candidates` are just the autocomplete's nearest neighbours, NOT substitutes.\n" +
+        "\n" +
+        "`count` is the number of training images behind the tag and saturates at " +
+        "10000. It discriminates at the low end: a few hundred means the model has " +
+        "seen the character but will be unreliable.",
+      inputSchema: {
+        queries: z
+          .array(z.string())
+          .min(1)
+          .max(40)
+          .describe("Names to check. Spaces, not underscores. Batched to save round trips."),
+        model: z
+          .string()
+          .optional()
+          .describe(`Tag knowledge is per model family. Default ${DEFAULT_PARAMS.model}.`),
+        minCount: z
+          .number()
+          .int()
+          .optional()
+          .describe("Also flag matches below this count as weak. Default 0 (flag nothing)."),
+      },
+    },
+    async (args) => {
+      const model = args.model ?? DEFAULT_PARAMS.model
+      const floor = args.minCount ?? 0
+      // One lease for the whole batch: these are free lookups, not generations,
+      // so there is nothing to balance and no reason to re-pick per query.
+      let lease: Lease
+      try {
+        lease = await acquire({ ...DEFAULT_PARAMS, width: 64, height: 64, steps: 1, batch: 1 })
       } catch (error) {
         return {
           isError: true,
@@ -464,8 +631,273 @@ export function buildServer(): McpServer {
           ],
         }
       }
+
+      const results: (Lookup & { weak?: boolean })[] = []
+      try {
+        for (const query of args.queries) {
+          const found = await lookup(lease.account.token, query, model)
+          results.push(
+            floor > 0 && found.kind !== "none" && found.count < floor
+              ? { ...found, weak: true }
+              : found,
+          )
+        }
+        succeed(lease)
+      } catch (error) {
+        fail(lease, error)
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "查询失败：" + (error instanceof Error ? error.message : String(error)),
+            },
+          ],
+        }
+      }
+
+      const known = results.filter((r) => r.kind !== "none")
+      const summary = {
+        model,
+        checked: results.length,
+        known: known.length,
+        unknown: results.filter((r) => r.kind === "none").map((r) => r.query),
+        results: results.map((r) => ({
+          query: r.query,
+          kind: r.kind,
+          match: r.match || null,
+          count: r.kind === "none" ? null : r.count,
+          ...(r.weak ? { weak: true } : {}),
+          // Only for the misses, where the caller may want to pick manually.
+          // Including them everywhere buried the answer in noise.
+          ...(r.kind === "none"
+            ? { nearest: r.candidates.slice(0, 5).map((c) => `${c.tag} (${c.count})`) }
+            : {}),
+        })),
+      }
+      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] }
     },
   )
 
+  // One registration per mode, all sharing the implementation below. Separate
+  // tools rather than a `mode` argument on the generic one: the description is
+  // where the V5 standard actually reaches the caller, and a tool the model can
+  // see is worth more than a parameter it has to know to set.
+  for (const mode of MODES) registerMode(server, mode)
+
   return server
+}
+
+
+/** The `kind` values for the visual-novel mode, and what each one changes. */
+const VN_KINDS: Record<
+  string,
+  { tag: string; alpha: boolean; datasetPrefix: string; width: number; height: number; extra: string }
+> = {
+  sprite: {
+    tag: "visual novel sprite",
+    alpha: true,
+    datasetPrefix: "",
+    width: 832,
+    height: 1216,
+    extra: "full body, standing, isolated, no background",
+  },
+  cg: {
+    tag: "visual novel cg",
+    alpha: false,
+    datasetPrefix: "",
+    width: 1216,
+    height: 832,
+    extra: "",
+  },
+  bg: {
+    tag: "visual novel bg",
+    alpha: false,
+    // Documented as the way to get a scene with no people in it; describing an
+    // empty room in words is far less reliable.
+    datasetPrefix: "background dataset,",
+    width: 1216,
+    height: 832,
+    extra: "no humans, scenery",
+  },
+  chibi: {
+    tag: "visual novel chibi",
+    alpha: true,
+    datasetPrefix: "",
+    width: 1024,
+    height: 1024,
+    extra: "chibi, isolated, no background",
+  },
+  art: {
+    tag: "visual novel art",
+    alpha: false,
+    datasetPrefix: "",
+    width: 1216,
+    height: 832,
+    extra: "",
+  },
+}
+
+function registerMode(server: McpServer, mode: Mode) {
+  const isVisualNovel = mode.name === "novelai_visual_novel"
+  server.registerTool(
+    mode.name,
+    {
+      title: mode.title,
+      description: describeMode(mode),
+      inputSchema: {
+        subject: z
+          .string()
+          .describe(
+            "What to draw. The mode supplies the style, the framing and the " +
+              "undesired content; give the subject and the composition only.",
+          ),
+        ...(isVisualNovel
+          ? {
+              kind: z
+                .enum(["sprite", "cg", "bg", "chibi", "art"])
+                .describe("Which visual-novel asset. See the tool description."),
+            }
+          : {}),
+        translucent: z
+          .boolean()
+          .optional()
+          .describe(
+            "Add NovelAI's `alpha transparency` tag, which makes things in the scene " +
+              "see-through — magic, fire, glass, umbrellas. Off by default: on a character " +
+              "or item cut-out it produces a translucent subject, not a clean background.",
+          ),
+        negative: z.string().optional().describe("Extra negative prompt, on top of the mode's own."),
+        model: z
+          .string()
+          .optional()
+          .describe("Defaults to V5 Full. These modes assume a V5 model."),
+        width: z.number().int().optional().describe("Overrides the mode's canvas."),
+        height: z.number().int().optional(),
+        steps: z.number().int().min(1).max(50).optional(),
+        guidance: z.number().min(0).max(10).optional(),
+        seed: z.number().int().optional(),
+        count: z.number().int().min(1).max(8).optional(),
+        characters: z
+          .array(
+            z.object({
+              prompt: z.string(),
+              negative: z.string().optional(),
+              x: z.number().min(0).max(1).optional(),
+              y: z.number().min(0).max(1).optional(),
+            }),
+          )
+          .optional()
+          .describe(
+            "Per-character captions. For a manga page these are how you pin who " +
+              "appears in which panel: x/y are 0..1 from the top-left.",
+          ),
+        imageSize: z.enum(["preview", "full", "none"]).optional(),
+        previewWidth: z.number().int().min(128).max(2048).optional(),
+      },
+    },
+    async (args: Record<string, any>) => {
+      const vn = isVisualNovel ? VN_KINDS[args.kind ?? "art"] : null
+      const wantsAlpha = vn ? vn.alpha : mode.wantsAlpha
+
+      const base = modeParams(mode)
+      const prefixParts = [
+        wantsAlpha && vn ? "2.1::transparent background::, has alpha" : "",
+        vn ? vn.tag : mode.prefix,
+      ]
+        .filter(Boolean)
+        .join(", ")
+      const withTranslucent = args.translucent ? prefixParts + ", " + TRANSLUCENT_TAG : prefixParts
+      const effective: Mode = vn
+        ? { ...mode, prefix: withTranslucent, suffix: vn.extra, width: vn.width, height: vn.height }
+        : args.translucent
+          ? { ...mode, prefix: [mode.prefix, TRANSLUCENT_TAG].filter(Boolean).join(", ") }
+          : mode
+
+      const fitted = fitSize(
+        args.width ?? effective.width ?? base.width,
+        args.height ?? effective.height ?? base.height,
+      )
+      const params: GenerateParams = {
+        ...base,
+        model: args.model ?? DEFAULT_PARAMS.model,
+        stylePrompt: "",
+        characterPrompt: "",
+        prompt: composePrompt(effective, args.subject ?? "", vn?.datasetPrefix ?? ""),
+        negative: [mode.negative, args.negative ?? ""].filter(Boolean).join(", "),
+        width: fitted.width,
+        height: fitted.height,
+        steps: args.steps ?? effective.steps,
+        guidance: args.guidance ?? effective.guidanceScale,
+        seed: args.seed ?? 0,
+        batch: args.count ?? 1,
+        characters: (args.characters ?? []).map((character: any) => ({
+          prompt: character.prompt,
+          negative: character.negative ?? "",
+          useCoords: character.x != null || character.y != null,
+          x: character.x ?? 0.5,
+          y: character.y ?? 0.5,
+        })),
+      }
+
+      if (!(args.subject ?? "").trim()) {
+        return { isError: true, content: [{ type: "text", text: "subject 不能为空。" }] }
+      }
+
+      const results: { path: string; seed: number; remote: string | null; alpha: boolean }[] = []
+      let lastPng: Buffer | null = null
+      let lastPath = ""
+      try {
+        for (let i = 0; i < (args.count ?? 1); i++) {
+          const seed = params.seed > 0 ? params.seed : rollSeed()
+          const made = await generateWithFailover(params, seed)
+          results.push({
+            path: made.path,
+            seed: made.seed,
+            remote: made.remote,
+            alpha: pngHasAlpha(made.png),
+          })
+          lastPng = made.png
+          lastPath = made.path
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return {
+          isError: true,
+          content: [{ type: "text", text: `生成失败：${message}` }],
+        }
+      }
+
+      const lines = [
+        `${mode.title}${vn ? ` · ${args.kind}` : ""} · ${results.length} 张 · ${params.width}×${params.height}`,
+        `seed: ${results.map((r) => r.seed).join(", ")}`,
+        `实际发送的提示词: ${effectivePrompt(params)}`,
+      ]
+      if (wantsAlpha) {
+        // Transparency is asked for in the prompt, so it can quietly not
+        // happen. Saying so beats letting the caller assume it worked.
+        const withAlpha = results.filter((r) => r.alpha).length
+        lines.push(
+          withAlpha === results.length
+            ? `透明通道: ${withAlpha}/${results.length} 张带 alpha ✔`
+            : `透明通道: 只有 ${withAlpha}/${results.length} 张带 alpha —— ` +
+                "提示词里的透明标签没生效。可以调高权重（如 2.4::transparent background::），" +
+                "或确认提示词里没有描述背景。",
+        )
+      }
+      lines.push("", ...results.map((r) => publicUrl(r.path, r.remote) ?? r.path))
+
+      const content: any[] = [{ type: "text", text: lines.join("\n") }]
+      const inline = inlineImage(
+        args.imageSize,
+        lastPng,
+        lastPath,
+        args.previewWidth,
+        wantsAlpha && results.some((r) => r.alpha),
+      )
+      if (inline) content.push(inline)
+      sweepLocal()
+      return { content }
+    },
+  )
 }

@@ -148,7 +148,7 @@ export function GalleryTab({ wb }: { wb: Workbench }) {
                 <StatPill label="共" value={String(history.length)} systemImage="photo.stack" />
                 <Spacer />
                 <Text font={11} foregroundStyle="tertiaryLabel">
-                  点开查看 · 长按删除或复用参数
+                  点开查看 · 长按删除或复用配置
                 </Text>
               </HStack>
               <LazyVGrid
@@ -179,7 +179,7 @@ export function GalleryTab({ wb }: { wb: Workbench }) {
                               action={() => wb.shareImage(item)}
                             />
                             <Button
-                              title="复用参数"
+                              title="复用完整配置"
                               systemImage="arrow.uturn.backward"
                               action={() => wb.reuse(item)}
                             />
@@ -225,7 +225,7 @@ export function GalleryTab({ wb }: { wb: Workbench }) {
                   tint={ACCENT}
                 />
                 <Button
-                  title="复用参数"
+                  title="复用完整配置"
                   action={() => wb.reuse(current)}
                   buttonStyle="bordered"
                   controlSize="small"

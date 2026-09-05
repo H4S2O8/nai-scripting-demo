@@ -74,7 +74,8 @@ sudo chown novelai-mcp:novelai-mcp /var/lib/novelai-mcp
 `/etc/novelai-mcp.env`：
 
 ```sh
-NOVELAI_TOKEN=pst-你的令牌
+# 一个账户直接这样写；多个见下面的「多账户」
+NOVELAI_TOKENS=pst-你的令牌
 MCP_AUTH_TOKEN=上一步生成的随机串
 NOVELAI_OUTPUT_DIR=/var/lib/novelai-mcp
 NOVELAI_PUBLIC_URL=https://nai.你的域名
@@ -201,11 +202,40 @@ ssh <host> 'grep MCP_AUTH_TOKEN /etc/novelai-mcp.env'
 
 连上之后 Assistant 就能调 `novelai_generate_image`，图片默认**内联返回**，直接渲染进对话。
 
+## 多账户
+
+`NOVELAI_TOKENS` 里可以放多个账户，生图时**每张图单独选号**：
+
+```
+NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
+```
+
+选号不是轮询。稀缺的是 **Opus 免费额度**（≤1 MP 且 ≤28 步才免费，按账户计量），
+所以按这张图在**那个账户上**的实际价格来分：
+
+| 情况 | 选谁 |
+| --- | --- |
+| 这张图能走免费额度 | Opus 账户里**剩余额度最多**的那个 |
+| 这张图要花 Anlas | **付得起且 Anlas 最多**的那个 |
+| 平手 | 在飞请求少的、已服务次数少的优先 |
+
+一次要多张图时每张都重新选，所以 4 张会摊到池子里，而不是把一个号抽干——这才是
+多账户的意义。
+
+失败会自动换号重试，但**只针对账户本身的问题**（401、402、429）。提示词写错在哪个号上
+都一样错，换号重试只会把整个池的额度烧掉，所以这类错误直接返回。
+
+出问题的账户进冷却：令牌无效 10 分钟，额度不足 5 分钟，限流 1 分钟。
+
+`novelai_account` 会列出池里每个账户的档位、Anlas、剩余免费额度、已服务张数和冷却状态。
+**输出里没有令牌**，只有标签和一个 8 位指纹。
+
 ## 环境变量
 
 | 变量 | 说明 |
 | --- | --- |
-| `NOVELAI_TOKEN` | 必填。网页 设置 → Account → Get Persistent API Token |
+| `NOVELAI_TOKENS` | 账户池。多个 `pst-` 令牌用逗号或换行分隔，可写成 `label=pst-xxx`。生图按剩余额度自动选号 |
+| `NOVELAI_TOKEN` | 单个令牌，仍然可用，会并入同一个池。两个都不填生图必失败 |
 | `MCP_AUTH_TOKEN` | HTTP 模式必填。客户端要带的 Bearer 密钥 |
 | `NOVELAI_OUTPUT_DIR` | 图片存放目录，默认 `~/Pictures/NovelAI` |
 | `NOVELAI_PUBLIC_URL` | 填了之后结果里会附带图片直链（走同一个服务的 `/images/`） |

@@ -16,6 +16,16 @@ import {
 const PARAMS_KEY = "nai.params.v2"
 const HISTORY_KEY = "nai.history.v2"
 /**
+ * Full parameter snapshots, shared by the rows that used them.
+ *
+ * Stored beside the history rather than inside each row because a batch of
+ * eight images has one set of parameters, not eight, and successive
+ * generations usually reuse the previous ones. Interning keeps 500 rows of
+ * full configuration down to the handful of distinct settings that produced
+ * them, and unreferenced entries are pruned on every write.
+ */
+const PARAMS_POOL_KEY = "nai.paramspool.v1"
+/**
  * Cap on the *metadata* we keep, not on the images.
  *
  * The old value of 40 trimmed the list while leaving the PNGs on disk, so
@@ -128,12 +138,17 @@ function fromFilename(dir: string, name: string): GeneratedImage | null {
  * Rows whose file is gone are dropped.
  */
 export function loadHistory(): GeneratedImage[] {
-  const raw = Storage.get<GeneratedImage[]>(HISTORY_KEY)
-  const stored = Array.isArray(raw)
-    ? raw.filter(
-        (item) => item && typeof item.path === "string" && FileManager.existsSync(item.path),
-      )
-    : []
+  const raw = Storage.get<StoredImage[]>(HISTORY_KEY)
+  const pool = loadPool()
+  const stored: GeneratedImage[] = (Array.isArray(raw) ? raw : [])
+    .filter((item) => item && typeof item.path === "string" && FileManager.existsSync(item.path))
+    .map((item) => {
+      const { paramsId, ...rest } = item
+      const snapshot = paramsId !== undefined ? pool[paramsId] : undefined
+      // Normalized rather than trusted: a snapshot written by an older release
+      // can be missing fields that the generator now requires.
+      return snapshot ? { ...rest, params: normalizeParams(snapshot) } : (rest as GeneratedImage)
+    })
 
   const known: Record<string, boolean> = {}
   for (const item of stored) known[item.path] = true
@@ -153,9 +168,45 @@ export function loadHistory(): GeneratedImage[] {
   return stored.concat(found).sort((a, b) => b.createdAt - a.createdAt)
 }
 
+type ParamsPool = Record<string, GenerateParams>
+
+/** A row as stored: the snapshot is replaced by a reference into the pool. */
+type StoredImage = Omit<GeneratedImage, "params"> & { paramsId?: string }
+
+function loadPool(): ParamsPool {
+  const raw = Storage.get<ParamsPool>(PARAMS_POOL_KEY)
+  return raw && typeof raw === "object" ? raw : {}
+}
+
+/**
+ * Write the rows, interning their parameter snapshots.
+ *
+ * Identity is the serialized snapshot, so a batch of eight lands on one entry
+ * and so does regenerating with the settings untouched. Anything the surviving
+ * rows no longer point at is dropped, which is what stops the pool growing
+ * without bound as the history rolls over.
+ */
 function writeHistory(items: GeneratedImage[]): GeneratedImage[] {
   const trimmed = items.slice(0, HISTORY_LIMIT)
-  Storage.set(HISTORY_KEY, trimmed)
+
+  const pool: ParamsPool = {}
+  const idFor: Record<string, string> = {}
+  let next = 0
+  const rows: StoredImage[] = trimmed.map((item) => {
+    const { params, ...rest } = item
+    if (!params) return rest
+    const key = JSON.stringify(params)
+    let id = idFor[key]
+    if (id === undefined) {
+      id = String(next++)
+      idFor[key] = id
+      pool[id] = params
+    }
+    return { ...rest, paramsId: id }
+  })
+
+  Storage.set(HISTORY_KEY, rows)
+  Storage.set(PARAMS_POOL_KEY, pool)
   return trimmed
 }
 

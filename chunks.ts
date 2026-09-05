@@ -749,7 +749,14 @@ export function parseImport(text: string): Chunk[] {
   for (const raw of list) {
     if (!raw || typeof raw.id !== "string" || !raw.id) continue
     out.push({
-      containerId: typeof raw.containerId === "string" ? raw.containerId : "",
+      // Minted when absent: containerId is the keystore key id, and an empty
+      // one would file every such chunk under the same "" key.
+      containerId:
+        typeof raw.containerId === "string" && raw.containerId
+          ? raw.containerId
+          : raw.id === ROOT_ID
+            ? ROOT_ID
+            : UUID.string(),
       id: raw.id,
       label: typeof raw.label === "string" ? raw.label : "",
       expansion: typeof raw.expansion === "string" ? raw.expansion : "",
@@ -762,6 +769,88 @@ export function parseImport(text: string): Chunk[] {
   }
   if (out.length === 0) throw new Error("文件里没有可用的 chunk。")
   return out
+}
+
+export type MergeResult = { chunks: Chunk[]; added: number; replaced: number }
+
+/**
+ * Fold an imported file into the library instead of replacing it.
+ *
+ * Import used to overwrite the whole local library, so importing a 30-tag
+ * character pack threw away everything that had just been pulled from the
+ * account. Merging by id makes a small file a small change; restoring a full
+ * backup still works, because every id in it matches and overwrites.
+ *
+ * On a conflict the imported label/expansion/colour win, but the existing
+ * containerId and remoteId are kept: those identify the object on the server,
+ * and taking the file's copy would orphan the key the account already holds.
+ */
+export function mergeImport(existing: Chunk[], incoming: Chunk[]): MergeResult {
+  const byId: Record<string, number> = {}
+  existing.forEach((chunk, index) => {
+    byId[chunk.id] = index
+  })
+
+  const out = existing.slice()
+  let added = 0
+  let replaced = 0
+
+  for (const chunk of incoming) {
+    const index = byId[chunk.id]
+    if (index === undefined) {
+      byId[chunk.id] = out.length
+      out.push(chunk)
+      added++
+      continue
+    }
+    const current = out[index]
+    out[index] = {
+      ...chunk,
+      containerId: current.containerId || chunk.containerId,
+      remoteId: current.remoteId,
+      // Categories carry ordering: replacing the list outright would drop
+      // chunks this library has and the file does not.
+      childOrder: current.isCategory
+        ? mergeOrder(current.childOrder, chunk.childOrder)
+        : chunk.childOrder,
+      categoryOrder: current.isCategory
+        ? mergeOrder(current.categoryOrder, chunk.categoryOrder)
+        : chunk.categoryOrder,
+      version: Math.max(current.version ?? 1, chunk.version ?? 1) + 1,
+    }
+    replaced++
+  }
+
+  if (added === 0) return { chunks: out, added, replaced }
+
+  // Anything no category claims has to be listed in the root, or it lands in
+  // the picker's "未分类" bucket and moves again on the next sync.
+  const claimed: Record<string, boolean> = {}
+  for (const chunk of out) {
+    if (!chunk.isCategory) continue
+    for (const id of chunk.childOrder ?? []) claimed[id] = true
+  }
+
+  const rootIndex = out.findIndex((c) => c.id === ROOT_ID)
+  const root = rootIndex === -1 ? makeRoot() : { ...out[rootIndex] }
+  const childOrder = (root.childOrder ?? []).slice()
+  const categoryOrder = (root.categoryOrder ?? []).slice()
+
+  for (const chunk of out) {
+    if (chunk.id === ROOT_ID) continue
+    if (chunk.isCategory) {
+      if (categoryOrder.indexOf(chunk.id) === -1) categoryOrder.push(chunk.id)
+    } else if (!claimed[chunk.id] && childOrder.indexOf(chunk.id) === -1) {
+      childOrder.push(chunk.id)
+    }
+  }
+  root.childOrder = childOrder
+  root.categoryOrder = categoryOrder
+
+  if (rootIndex === -1) out.push(root)
+  else out[rootIndex] = root
+
+  return { chunks: out, added, replaced }
 }
 
 /* --------------------------------------------------------------- syncing */
