@@ -15,7 +15,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -39,6 +39,7 @@ import {
   rollSeed,
 } from "../nai"
 import { firstPng } from "./zip"
+import { r2Config, uploadToR2 } from "./r2"
 
 const IMAGE_HOST = "https://image.novelai.net"
 
@@ -56,6 +57,29 @@ function outputDir(): string {
   const dir = process.env.NOVELAI_OUTPUT_DIR?.trim() || join(homedir(), "Pictures", "NovelAI")
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+/**
+ * Keep the newest N local PNGs and drop the rest.
+ *
+ * R2 holds the durable copy; the local file exists so the preview can be
+ * rendered and so /images/ still works if the upload failed. Without a sweep
+ * the disk only ever grows.
+ */
+function sweepLocal(keep = Number(process.env.NOVELAI_LOCAL_KEEP ?? 50)) {
+  if (!Number.isFinite(keep) || keep < 1) return
+  try {
+    const dir = outputDir()
+    const files = readdirSync(dir)
+      .filter((name) => name.endsWith(".png"))
+      .map((name) => ({ name, at: statSync(join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+    for (const file of files.slice(keep)) {
+      rmSync(join(dir, file.name), { force: true })
+    }
+  } catch {
+    /* housekeeping must never break a generation */
+  }
 }
 
 function stamp(): string {
@@ -145,7 +169,14 @@ async function generateOne(params: GenerateParams, seed: number) {
   // what keeps it private.
   const path = join(outputDir(), `nai_${stamp()}_${actualSeed}_${randomBytes(8).toString("hex")}.png`)
   writeFileSync(path, png)
-  return { path, seed: actualSeed, bytes: png.length, png }
+
+  // Uploaded when R2 is configured, so the link survives the server's disk and
+  // the tunnel does not carry every view. A failed upload is not fatal: the
+  // local copy and /images/ still work.
+  const config = r2Config()
+  const remote = config ? await uploadToR2(config, path, png) : null
+
+  return { path, seed: actualSeed, bytes: png.length, png, remote }
 }
 
 /** Inline images by default: getting the picture into the conversation is the point. */
@@ -165,8 +196,15 @@ function defaultPreviewWidth(): number {
   return Number.isFinite(raw) && raw >= 128 && raw <= 2048 ? Math.floor(raw) : 512
 }
 
-/** Public URL for a saved file, when the server also serves the output directory. */
-export function publicUrl(path: string): string | null {
+/**
+ * Public URL for a saved file.
+ *
+ * Prefers the R2 object when the upload succeeded; falls back to this server's
+ * own /images/ route, which is why a storage outage costs a nicer link rather
+ * than the picture.
+ */
+export function publicUrl(path: string, remote?: string | null): string | null {
+  if (remote) return remote
   const base = process.env.NOVELAI_PUBLIC_URL?.trim()
   if (!base) return null
   return base.replace(/\/+$/, "") + "/images/" + encodeURIComponent(path.split("/").pop() ?? "")
@@ -284,14 +322,14 @@ export function buildServer(): McpServer {
         }
       }
 
-      const results: { path: string; seed: number }[] = []
+      const results: { path: string; seed: number; remote: string | null }[] = []
       let lastPng: Buffer | null = null
     let lastPath = ""
       try {
         for (let i = 0; i < (args.count ?? 1); i++) {
           const seed = params.seed > 0 ? params.seed : rollSeed()
           const made = await generateOne(params, seed)
-          results.push({ path: made.path, seed: made.seed })
+          results.push({ path: made.path, seed: made.seed, remote: made.remote })
           lastPng = made.png
         lastPath = made.path
         }
@@ -321,8 +359,8 @@ export function buildServer(): McpServer {
         `负面: ${effectiveNegative(params) || "（无）"}`,
         "",
         ...results.map((r) => {
-          const url = publicUrl(r.path)
-          return url ? `${r.path}\n${url}` : r.path
+          const url = publicUrl(r.path, r.remote)
+          return url ?? r.path
         }),
       ].join("\n")
 
@@ -344,6 +382,7 @@ export function buildServer(): McpServer {
           content.push({ type: "image", data: lastPng.toString("base64"), mimeType: "image/png" })
         }
       }
+      sweepLocal()
       return { content }
     },
   )
