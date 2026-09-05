@@ -412,6 +412,9 @@ export function PrimaryButton({
  * toolbar width. The colour carries the warning: the ring goes amber and then
  * red as the allowance runs down, so it is noticeable without being read.
  */
+/** Ring thickness. Also the inset, since a stroke is centred on its path. */
+const RING_STROKE = 2.5
+
 export function OpusRing({
   percent,
   initial,
@@ -434,22 +437,34 @@ export function OpusRing({
           ? ("systemOrange" as any)
           : ACCENT
 
+  // A stroke straddles its path: half of it is drawn OUTSIDE the circle. A
+  // circle inscribed in the frame therefore has that half clipped away where
+  // it meets the edge — at twelve and six o'clock first, because a toolbar
+  // pins the height and leaves the width alone.
+  //
+  // Insetting by exactly the line width would sit flush against the frame,
+  // which antialiasing can still shave. The extra point leaves half a point of
+  // margin on each side.
+  const ring = Math.max(0, size - RING_STROKE - 1)
+
   return (
     <ZStack frame={{ width: size, height: size }}>
       {fraction == null ? null : (
         <Circle
+          frame={{ width: ring, height: ring }}
           stroke={{
             shapeStyle: { color, opacity: 0.2 },
-            strokeStyle: { lineWidth: 2.5 },
+            strokeStyle: { lineWidth: RING_STROKE },
           }}
         />
       )}
       {fraction == null ? null : (
         <Circle
+          frame={{ width: ring, height: ring }}
           trim={{ from: 0, to: fraction }}
           stroke={{
             shapeStyle: color,
-            strokeStyle: { lineWidth: 2.5, lineCap: "round" },
+            strokeStyle: { lineWidth: RING_STROKE, lineCap: "round" },
           }}
           // Start the arc at twelve o'clock instead of three.
           rotationEffect={-90}
