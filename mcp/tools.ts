@@ -153,6 +153,18 @@ function inlineByDefault(): boolean {
   return (process.env.NOVELAI_INLINE_IMAGES ?? "1").trim() !== "0"
 }
 
+/**
+ * Default preview width.
+ *
+ * An inlined image stays in the conversation and is resent on every later
+ * turn, so its cost is cumulative, not one-off. Halving the width quarters the
+ * pixels and roughly quarters what it costs to carry.
+ */
+function defaultPreviewWidth(): number {
+  const raw = Number(process.env.NOVELAI_PREVIEW_WIDTH)
+  return Number.isFinite(raw) && raw >= 128 && raw <= 2048 ? Math.floor(raw) : 512
+}
+
 /** Public URL for a saved file, when the server also serves the output directory. */
 export function publicUrl(path: string): string | null {
   const base = process.env.NOVELAI_PUBLIC_URL?.trim()
@@ -201,12 +213,15 @@ export function buildServer(): McpServer {
             "V4+/V5 per-character captions. Give x and y to pin a character; omit both to let the model place them.",
           ),
         imageSize: z
-          .enum(["preview", "full"])
+          .enum(["preview", "full", "none"])
           .optional()
           .describe(
-            "preview (default) inlines a ~70KB 512px JPEG; full inlines the original PNG, " +
-              "around 2MB of base64 — reliable on wifi, often too slow on cellular. " +
-              "The full-resolution file is always linked either way.",
+            "How much image to put in the conversation. preview (default) inlines a small JPEG; " +
+              "full inlines the original PNG (~2MB of base64); none inlines nothing and returns " +
+              "only the link. An inlined image stays in the history and is resent every turn, so " +
+              "prefer none while iterating on prompts or generating drafts the user has not asked " +
+              "to look at, and preview when they want to see the result. The full-resolution file " +
+              "is linked in every case.",
           ),
         previewWidth: z
           .number()
@@ -214,7 +229,10 @@ export function buildServer(): McpServer {
           .min(128)
           .max(2048)
           .optional()
-          .describe("Width of the inlined preview in pixels. Default 512."),
+          .describe(
+            `Width of the inlined preview in pixels. Default ${defaultPreviewWidth()}. ` +
+              "Smaller costs proportionally fewer tokens for every turn it stays in history.",
+          ),
         returnImage: z
           .boolean()
           .optional()
@@ -310,9 +328,13 @@ export function buildServer(): McpServer {
 
       const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] =
         [{ type: "text", text: summary }]
-      if ((args.returnImage ?? inlineByDefault()) && lastPath) {
+      const wantsImage =
+        args.imageSize === "none" ? false : (args.returnImage ?? inlineByDefault())
+      if (wantsImage && lastPath) {
         const small =
-          args.imageSize === "full" ? null : preview(lastPath, args.previewWidth ?? 512)
+          args.imageSize === "full"
+            ? null
+            : preview(lastPath, args.previewWidth ?? defaultPreviewWidth())
         if (small) {
           content.push({ type: "image", data: small.toString("base64"), mimeType: "image/jpeg" })
         } else if (lastPng) {
