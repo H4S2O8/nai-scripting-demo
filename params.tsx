@@ -26,11 +26,14 @@ import {
   NOISE_SCHEDULES,
   QUALITY_PRESETS,
   SAMPLERS,
-  SIZE_PRESETS,
+  OPUS_FREE_PIXELS,
+  SIZE_PRESETS_1MP,
+  SIZE_PRESETS_LARGE,
   UC_PRESETS,
   effectiveNegative,
   fitSize,
   maxDimensionFor,
+  partnerWithin,
   snapDimension,
   supportsLightQuality,
   supportsNoiseSchedule,
@@ -51,6 +54,9 @@ function ratioLabel(width: number, height: number): string {
 export function ParamsTab({ wb }: { wb: Workbench }) {
   const { params, patch } = wb
   const [advanced, setAdvanced] = useState(false)
+  // On by default: staying inside the free allowance is what most sessions want,
+  // and it is the constraint people forget until the Anlas is gone.
+  const [lockFree, setLockFree] = useState(true)
   // Committed on blur, not per keystroke — snapping mid-edit fights the user.
   const [widthText, setWidthText] = useState(String(params.width))
   const [heightText, setHeightText] = useState(String(params.height))
@@ -64,28 +70,39 @@ export function ParamsTab({ wb }: { wb: Workbench }) {
   }, [params.width, params.height])
 
   const applySize = (width: number, height: number) => {
+    // A preset is an explicit choice; picking a large one turns the lock off
+    // rather than silently shrinking what was just tapped.
+    if (width * height > OPUS_FREE_PIXELS) setLockFree(false)
     const fitted = fitSize(width, height)
     setWidthText(String(fitted.width))
     setHeightText(String(fitted.height))
     patch({ width: fitted.width, height: fitted.height })
   }
 
+  // With the 1 MP lock on, fixing one side pulls the other down to fit rather
+  // than rejecting the edit — you asked for that width, so the height gives way.
   const commitWidth = () => {
-    const value = Math.min(
+    const width = Math.min(
       snapDimension(Number(widthText), params.width),
       maxDimensionFor(params.height),
     )
-    setWidthText(String(value))
-    patch({ width: value })
+    const height = lockFree
+      ? Math.min(params.height, partnerWithin(width))
+      : params.height
+    setWidthText(String(width))
+    setHeightText(String(height))
+    patch({ width, height })
   }
 
   const commitHeight = () => {
-    const value = Math.min(
+    const height = Math.min(
       snapDimension(Number(heightText), params.height),
       maxDimensionFor(params.width),
     )
-    setHeightText(String(value))
-    patch({ height: value })
+    const width = lockFree ? Math.min(params.width, partnerWithin(height)) : params.width
+    setHeightText(String(height))
+    setWidthText(String(width))
+    patch({ width, height })
   }
 
   return (
@@ -128,8 +145,21 @@ export function ParamsTab({ wb }: { wb: Workbench }) {
               </Text>
             }
           >
+            <FieldLabel text="1 MP 以内" hint="Opus 免费额度" />
             <FlowLayout spacing={8}>
-              {SIZE_PRESETS.map((preset) => (
+              {SIZE_PRESETS_1MP.map((preset) => (
+                <Chip
+                  label={preset.label}
+                  selected={
+                    params.width === preset.width && params.height === preset.height
+                  }
+                  onTap={() => applySize(preset.width, preset.height)}
+                />
+              ))}
+            </FlowLayout>
+            <FieldLabel text="大图" hint="超出免费额度，按 Anlas 计费" />
+            <FlowLayout spacing={8}>
+              {SIZE_PRESETS_LARGE.map((preset) => (
                 <Chip
                   label={preset.label}
                   selected={
@@ -165,9 +195,15 @@ export function ParamsTab({ wb }: { wb: Workbench }) {
                 />
               </Well>
             </HStack>
+            <SwitchRow
+              title="限制在 1 MP 内"
+              subtitle="改一边自动收另一边，保持在 Opus 免费额度内"
+              value={lockFree}
+              onChanged={setLockFree}
+            />
             <Text font={11} foregroundStyle="tertiaryLabel">
-              失焦后按 {DIM_STEP} 的倍数校准，总像素上限{" "}
-              {(MAX_PIXELS / 1048576).toFixed(0)} MP。
+              失焦后按 {DIM_STEP} 的倍数校准。总像素上限{" "}
+              {(MAX_PIXELS / 1048576).toFixed(0)} MP；免费额度是 1 MP 且 ≤28 步。
             </Text>
           </Card>
 

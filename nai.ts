@@ -57,19 +57,38 @@ export const QUALITY_PRESETS = [
   { id: "none", label: "关闭" },
 ]
 
-export const SIZE_PRESETS = [
-  { group: "常用", label: "竖图", width: 832, height: 1216 },
-  { group: "常用", label: "横图", width: 1216, height: 832 },
-  { group: "常用", label: "方图", width: 1024, height: 1024 },
-  { group: "高清", label: "高竖", width: 1024, height: 1536 },
-  { group: "高清", label: "宽横", width: 1536, height: 1024 },
-  { group: "高清", label: "大方", width: 1472, height: 1472 },
-  { group: "壁纸", label: "壁纸竖", width: 1088, height: 1920 },
-  { group: "壁纸", label: "壁纸横", width: 1920, height: 1088 },
-  { group: "轻量", label: "小竖", width: 512, height: 768 },
-  { group: "轻量", label: "小横", width: 768, height: 512 },
-  { group: "轻量", label: "小方", width: 640, height: 640 },
+/**
+ * Sizes that stay inside the Opus free allowance (≤ 1 MP, with ≤ 28 steps).
+ *
+ * Each is the largest 64-multiple pair within 1 MP whose aspect ratio lands
+ * within 3% of the target — maximising detail matters more here than hitting
+ * the ratio exactly, since a pixel-perfect 19.5:9 would come out at a third of
+ * the resolution.
+ */
+export const SIZE_PRESETS_1MP = [
+  { label: "方图", width: 1024, height: 1024, note: "1:1" },
+  { label: "竖图", width: 832, height: 1216, note: "2:3" },
+  { label: "横图", width: 1216, height: 832, note: "3:2" },
+  { label: "竖 3:4", width: 832, height: 1088, note: "3:4" },
+  { label: "横 4:3", width: 1088, height: 832, note: "4:3" },
+  { label: "竖 9:16", width: 768, height: 1344, note: "9:16" },
+  { label: "横 16:9", width: 1344, height: 768, note: "16:9" },
+  { label: "手机壁纸", width: 640, height: 1408, note: "19.5:9" },
+  { label: "壁纸横屏", width: 1408, height: 640, note: "19.5:9" },
 ]
+
+/** Full-size renders, up to the official 3 MP ceiling. These always cost Anlas. */
+export const SIZE_PRESETS_LARGE = [
+  { label: "大方图", width: 1728, height: 1728, note: "1:1" },
+  { label: "大竖图", width: 1408, height: 2176, note: "2:3" },
+  { label: "大横图", width: 2112, height: 1408, note: "3:2" },
+  { label: "大竖 3:4", width: 1536, height: 2048, note: "3:4" },
+  { label: "大竖 9:16", width: 1280, height: 2304, note: "9:16" },
+  { label: "大横 16:9", width: 2304, height: 1280, note: "16:9" },
+  { label: "大壁纸", width: 1216, height: 2560, note: "19.5:9" },
+]
+
+export const SIZE_PRESETS = SIZE_PRESETS_1MP.concat(SIZE_PRESETS_LARGE)
 
 export type QualityPreset = "standard" | "light" | "none"
 
@@ -204,6 +223,20 @@ export function snapDimension(value: number, fallback = 1024): number {
   if (!Number.isFinite(parsed)) return snapDimension(fallback, 1024)
   const snapped = Math.round(parsed / DIM_STEP) * DIM_STEP
   return Math.min(MAX_DIM, Math.max(MIN_DIM, snapped))
+}
+
+/** The Opus free allowance: at or below this, and ≤ 28 steps, costs nothing. */
+export const OPUS_FREE_PIXELS = 1024 * 1024
+
+/**
+ * Largest 64-multiple value the other side may take without exceeding `cap`.
+ *
+ * Used to keep a custom size inside the free allowance: fix one side, and this
+ * is what the other has to come down to.
+ */
+export function partnerWithin(fixed: number, cap = OPUS_FREE_PIXELS): number {
+  const other = Math.max(MIN_DIM, snapDimension(fixed, MIN_DIM))
+  return Math.max(MIN_DIM, Math.floor(cap / other / DIM_STEP) * DIM_STEP)
 }
 
 /** Largest legal value for one side given the other. */

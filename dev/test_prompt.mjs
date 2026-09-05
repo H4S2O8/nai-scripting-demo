@@ -236,6 +236,37 @@ console.log("prompt composition (nai.ts)")
 
   check("blocks dedupe against each other", N.effectivePrompt({ ...base, characterPrompt: "1girl, watercolor" }) === "watercolor, soft edges, 1girl, cowboy shot, smiling")
 
+  console.log("size presets")
+  // A preset that quietly exceeds 1MP costs Anlas on what the UI labels free,
+  // and one that is not a multiple of 64 is rejected by the API.
+  const over1mp = N.SIZE_PRESETS_1MP.filter((p) => p.width * p.height > 1024 * 1024)
+  check("every 1MP preset is within the free allowance", over1mp.length === 0, JSON.stringify(over1mp))
+  check(
+    "every 1MP preset is a multiple of 64",
+    N.SIZE_PRESETS_1MP.every((p) => p.width % 64 === 0 && p.height % 64 === 0),
+  )
+  const overCap = N.SIZE_PRESETS_LARGE.filter((p) => p.width * p.height > 3145728)
+  check("every large preset is within the 3MP ceiling", overCap.length === 0, JSON.stringify(overCap))
+  check(
+    "every large preset is a multiple of 64",
+    N.SIZE_PRESETS_LARGE.every((p) => p.width % 64 === 0 && p.height % 64 === 0),
+  )
+  check(
+    "large presets actually exceed the free allowance",
+    N.SIZE_PRESETS_LARGE.every((p) => p.width * p.height > 1024 * 1024),
+  )
+  check("both sets are exposed together", N.SIZE_PRESETS.length === N.SIZE_PRESETS_1MP.length + N.SIZE_PRESETS_LARGE.length)
+
+  console.log("1MP lock")
+  check("a square at the limit keeps its partner", N.partnerWithin(1024) === 1024)
+  check("a tall preset pulls the partner down", N.partnerWithin(1408) === 704)
+  check("the partner is always a multiple of 64", [320, 512, 832, 1216, 2048].every((w) => N.partnerWithin(w) % 64 === 0))
+  check(
+    "the resulting pair never exceeds 1MP",
+    [320, 512, 832, 1024, 1216, 1408, 2048].every((w) => w * N.partnerWithin(w) <= 1024 * 1024),
+  )
+  check("it never returns below the minimum dimension", N.partnerWithin(99999) >= 64)
+
   console.log("character captions")
   const withChars = {
     ...base,

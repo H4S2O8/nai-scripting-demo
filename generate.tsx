@@ -22,7 +22,14 @@ import {
   VStack,
 } from "scripting"
 
-import { SIZE_PRESETS, maxCharacterPrompts, modelLabel, rollSeed } from "./nai"
+import {
+  SIZE_PRESETS,
+  SIZE_PRESETS_1MP,
+  SIZE_PRESETS_LARGE,
+  maxCharacterPrompts,
+  modelLabel,
+  rollSeed,
+} from "./nai"
 import { summarizePrompt } from "./prompttokens"
 import { CAN_MINIMIZE, VERSION, Workbench } from "./workbench"
 import { Chip, IconButton, OpusRing, PrimaryButton } from "./ui"
@@ -306,13 +313,24 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
                 </HStack>
               }
             >
-              {SIZE_PRESETS.map((preset) => (
-                <Button
-                  key={preset.label}
-                  title={`${preset.label} · ${preset.width}×${preset.height}`}
-                  action={() => wb.patch({ width: preset.width, height: preset.height })}
-                />
-              ))}
+              <Menu title="1 MP 以内（免费额度）">
+                {SIZE_PRESETS_1MP.map((preset) => (
+                  <Button
+                    key={preset.label}
+                    title={`${preset.label} · ${preset.width}×${preset.height}`}
+                    action={() => wb.patch({ width: preset.width, height: preset.height })}
+                  />
+                ))}
+              </Menu>
+              <Menu title="大图（计费）">
+                {SIZE_PRESETS_LARGE.map((preset) => (
+                  <Button
+                    key={preset.label}
+                    title={`${preset.label} · ${preset.width}×${preset.height}`}
+                    action={() => wb.patch({ width: preset.width, height: preset.height })}
+                  />
+                ))}
+              </Menu>
             </Menu>
 
             <Menu
