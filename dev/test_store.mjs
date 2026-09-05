@@ -31,6 +31,10 @@ globalThis.Storage = {
 }
 // Every path exists: the store drops rows whose file is gone, which would
 // otherwise hide everything these checks are about.
+globalThis.UUID = { string: () => "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+  const r = (Math.random() * 16) | 0
+  return (c === "x" ? r : (r & 0x3) | 0x8).toString(16)
+}) }
 const FILES = new Set()
 globalThis.FileManager = {
   existsSync: (path) => FILES.has(path) || path.endsWith("/out"),
@@ -210,6 +214,42 @@ console.log("older releases")
   check("missing fields are filled in", back.steps === N.DEFAULT_PARAMS.steps)
   check("missing character list becomes empty", Array.isArray(back.characters))
   check("the size is still valid", back.width % 64 === 0 && back.height % 64 === 0)
+}
+
+console.log("duplicate paths")
+{
+  delete STORE["nai.history.v2"]
+  delete STORE["nai.paramspool.v1"]
+  // What a fixed-seed batch used to write: one filename, several rows. Two
+  // rows with one path are two grid cells with one key, and that is what made
+  // a tap open the neighbouring image.
+  const shared = "/docs/out/nai_20260905_120000_777.png"
+  FILES.add(shared)
+  STORE["nai.history.v2"] = [
+    { path: shared, seed: 777, model: "m", width: 832, height: 1216, prompt: "second", createdAt: 2000 },
+    { path: shared, seed: 777, model: "m", width: 832, height: 1216, prompt: "first", createdAt: 1000 },
+    { ...image({ prompt: "other" }) },
+  ]
+  const loaded = S.loadHistory()
+  check("duplicate paths collapse to one row", loaded.filter((i) => i.path === shared).length === 1)
+  check("the newest of the duplicates wins", loaded.find((i) => i.path === shared).prompt === "second")
+  check("other rows are untouched", loaded.some((i) => i.prompt === "other"))
+  check("every path is unique", new Set(loaded.map((i) => i.path)).size === loaded.length)
+}
+
+console.log("generated filenames")
+{
+  // The whole point of the suffix: a fixed seed inside one second used to
+  // produce one filename for the whole batch, so images overwrote each other.
+  const names = new Set()
+  for (let i = 0; i < 200; i++) names.add(N.outputPathForTest(777))
+  check("a fixed seed still yields unique names", names.size === 200, String(names.size))
+  const one = [...names][0].split("/").pop()
+  check("the name still starts with nai_", one.startsWith("nai_"))
+  // store.ts rebuilds history from filenames when the metadata is gone; the
+  // suffix must not break that.
+  check("the seed is still recoverable from the name",
+        /^nai_\d{8}_\d{6}_777_[0-9a-f]{8}\.png$/.test(one), one)
 }
 
 console.log(failures === 0 ? "\n+ all store checks passed" : `\n- ${failures} check(s) failed`)

@@ -165,7 +165,21 @@ export function loadHistory(): GeneratedImage[] {
     }
   }
 
-  return stored.concat(found).sort((a, b) => b.createdAt - a.createdAt)
+  // Deduplicated by path, newest kept.
+  //
+  // Rows written before filenames carried a random suffix can share a path,
+  // and two rows with one path are two grid cells with one key — which makes
+  // a tap open the wrong image. New writes cannot collide any more, but the
+  // rows already on the device can, so the read defends itself.
+  const seenPath: Record<string, boolean> = {}
+  return stored
+    .concat(found)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .filter((item) => {
+      if (seenPath[item.path]) return false
+      seenPath[item.path] = true
+      return true
+    })
 }
 
 type ParamsPool = Record<string, GenerateParams>

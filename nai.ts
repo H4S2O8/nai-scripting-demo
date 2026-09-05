@@ -715,7 +715,19 @@ function outputPath(seed: number): string {
     .replace(/[-:]/g, "")
     .replace("T", "_")
     .slice(0, 15)
-  return outputDir() + "/nai_" + stamp + "_" + seed + ".png"
+  // The suffix is not decoration. The stamp is second-precision and the seed
+  // is FIXED for every image in a batch when the user pins one, so two images
+  // of the same batch landed on the same filename: the second overwrote the
+  // first, and the history then held two rows with one path. Duplicate paths
+  // are duplicate keys in the grid, which is why tapping a thumbnail opened a
+  // neighbouring image.
+  const unique = UUID.string().replace(/-/g, "").slice(0, 8)
+  return outputDir() + "/nai_" + stamp + "_" + seed + "_" + unique + ".png"
+}
+
+/** Exposed for tests: filename uniqueness is what stops a batch overwriting itself. */
+export function outputPathForTest(seed: number): string {
+  return outputPath(seed)
 }
 
 /** Unzip the API response into the output directory and return the PNG path. */
