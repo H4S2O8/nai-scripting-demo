@@ -10,11 +10,20 @@ import {
   GenerateParams,
   GeneratedImage,
   fitSize,
+  outputDir,
 } from "./nai"
 
 const PARAMS_KEY = "nai.params.v2"
 const HISTORY_KEY = "nai.history.v2"
-const HISTORY_LIMIT = 40
+/**
+ * Cap on the *metadata* we keep, not on the images.
+ *
+ * The old value of 40 trimmed the list while leaving the PNGs on disk, so
+ * anything older simply became invisible — present, taking up space, and
+ * unreachable from the app. History is now rebuilt from the directory, and this
+ * only bounds how much prompt/seed detail Storage carries.
+ */
+const HISTORY_LIMIT = 500
 
 function toNumber(value: unknown, fallback: number): number {
   const parsed = Number(value)
@@ -87,13 +96,61 @@ export function saveParams(params: GenerateParams): void {
   Storage.set(PARAMS_KEY, params)
 }
 
-/** History rows whose PNG has been deleted from disk are dropped on read. */
+/** Recover what a filename encodes, for images whose metadata is gone. */
+function fromFilename(dir: string, name: string): GeneratedImage | null {
+  // nai_YYYYMMDD_HHMMSS_<seed>.png, optionally with a random suffix.
+  const match = /^nai_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_(\d+)/.exec(name)
+  if (!match) return null
+  const [, y, mo, d, h, mi, sec, seed] = match
+  return {
+    path: dir + "/" + name,
+    seed: Number(seed),
+    model: "",
+    width: 0,
+    height: 0,
+    prompt: "",
+    createdAt: new Date(
+      Number(y),
+      Number(mo) - 1,
+      Number(d),
+      Number(h),
+      Number(mi),
+      Number(sec),
+    ).getTime(),
+  }
+}
+
+/**
+ * Everything on disk, newest first.
+ *
+ * Stored metadata supplies prompt/model/size where we have it; any PNG in the
+ * output directory without a row still shows up, reconstructed from its name.
+ * Rows whose file is gone are dropped.
+ */
 export function loadHistory(): GeneratedImage[] {
   const raw = Storage.get<GeneratedImage[]>(HISTORY_KEY)
-  if (!Array.isArray(raw)) return []
-  return raw.filter(
-    (item) => item && typeof item.path === "string" && FileManager.existsSync(item.path),
-  )
+  const stored = Array.isArray(raw)
+    ? raw.filter(
+        (item) => item && typeof item.path === "string" && FileManager.existsSync(item.path),
+      )
+    : []
+
+  const known: Record<string, boolean> = {}
+  for (const item of stored) known[item.path] = true
+
+  const dir = outputDir()
+  const found: GeneratedImage[] = []
+  if (FileManager.existsSync(dir)) {
+    for (const name of FileManager.readDirectorySync(dir, false)) {
+      if (!name.toLowerCase().endsWith(".png")) continue
+      const path = name.startsWith("/") ? name : dir + "/" + name
+      if (known[path]) continue
+      const rebuilt = fromFilename(dir, name.split("/").pop() ?? name)
+      if (rebuilt) found.push({ ...rebuilt, path })
+    }
+  }
+
+  return stored.concat(found).sort((a, b) => b.createdAt - a.createdAt)
 }
 
 function writeHistory(items: GeneratedImage[]): GeneratedImage[] {
