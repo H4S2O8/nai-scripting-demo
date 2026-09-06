@@ -56,6 +56,9 @@ const std = M.V5_PROMPT_STANDARD
 check("documents the numeric weight syntax", /1\.4::tag::/.test(std))
 check("quotes NovelAI's own transparency weight", /2\.1::transparent background::/.test(std))
 check("documents the dataset prefixes", /fur dataset,/.test(std) && /background dataset,/.test(std))
+// Documented by NovelAI, but it drags the result toward photography, so the
+// standard has to warn rather than just recommend.
+check("warns that the background dataset looks photographic", /toward\s+photography/i.test(std))
 check("documents the Text: directive", /Text:/.test(std))
 check("documents the character cap", /32/.test(std))
 check("documents the token budgets", /1471/.test(std) && /703/.test(std))
@@ -171,6 +174,29 @@ for (const mode of M.MODES) {
 {
   const vn = M.modeByName("novelai_visual_novel")
   check("the VN shot picks a kind", ["sprite", "cg", "bg", "chibi", "art"].includes(vn.shot.kind))
+  check("the bg guidance says why the dataset prefix is skipped",
+        /photograph/i.test(vn.guidance) && /no humans, scenery/.test(vn.guidance))
+}
+
+console.log("visual novel kinds")
+{
+  const kinds = M.VN_KINDS
+  check("all five kinds exist",
+        ["sprite", "cg", "bg", "chibi", "art"].every((k) => kinds[k] != null))
+  // The correction: "background dataset," does empty a scene of people, but it
+  // also pulls the render toward photography, which is wrong for every one of
+  // these — they are all illustration.
+  check("no kind uses the background dataset prefix",
+        Object.values(kinds).every((k) => !/background dataset/.test(k.datasetPrefix)),
+        Object.entries(kinds).filter(([, k]) => /background dataset/.test(k.datasetPrefix)).map(([n]) => n).join(","))
+  check("bg still clears the frame of people", /no humans/.test(kinds.bg.extra))
+  check("bg is landscape", kinds.bg.width > kinds.bg.height)
+  check("sprite and chibi are the transparent ones",
+        kinds.sprite.alpha && kinds.chibi.alpha && !kinds.bg.alpha && !kinds.cg.alpha && !kinds.art.alpha)
+  check("every kind fits the Opus free tier",
+        Object.values(kinds).every((k) => k.width * k.height <= 1024 * 1024))
+  check("every kind is a multiple of 64",
+        Object.values(kinds).every((k) => k.width % 64 === 0 && k.height % 64 === 0))
   const illo = M.modeByName("novelai_illustration")
   // The docs are explicit: counts live in the base prompt, singular in captions.
   check("the illustration shot puts the count tag in the subject", /2girls/.test(illo.shot.subject))

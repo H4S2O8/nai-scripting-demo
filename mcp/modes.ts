@@ -21,7 +21,8 @@
  *     where earlier models were limited to 2koma.
  *
  *   docs.novelai.net/en/image/models
- *     "fur dataset," and "background dataset," as prompt-leading tags.
+ *     "fur dataset," and "background dataset," as prompt-leading tags. The
+ *     latter is documented but deliberately unused: see the bg mode.
  *     Token budgets, 22 characters in official testing, text rendering in
  *     English / Japanese / Chinese.
  *
@@ -71,7 +72,10 @@ TRANSPARENCY — three different tags, not synonyms
 DATASET PREFIXES (put at the very start of the prompt, when they apply)
 - "fur dataset," for furry / kemono art.
 - "background dataset," for landscapes, animal portraits and still lifes with
-  no people in them.
+  no people in them. CAUTION: in use it also drags the result toward
+  photography. Do not reach for it to empty a scene of people in an illustrated
+  style — "no humans, scenery" does that without touching the look. Use it only
+  when a photographic result is what you want.
 
 TEXT IN THE IMAGE
 - Write the words as  Text: the words here  — V5 renders English, Japanese and
@@ -227,12 +231,14 @@ export const MODES: Mode[] = [
       "  sprite — a standing character sprite. Gets alpha transparency, since a " +
       "sprite is composited over a background.\n" +
       "  cg     — a full-screen event illustration, 16:9.\n" +
-      "  bg     — a background plate with no characters in it. Also gets the " +
-      "official 'background dataset,' prefix.\n" +
+      "  bg     — a background plate with no characters in it, via " +
+      "'no humans, scenery'. Deliberately NOT the official 'background " +
+      "dataset,' prefix: that empties the scene but pulls the style toward " +
+      "photography, which is wrong for a visual novel.\n" +
       "  chibi  — a small deformed-proportion character, on transparency.\n" +
       "  art    — general visual-novel-styled illustration.\n" +
       "Pick `bg` rather than describing an empty room in another mode: the " +
-      "dataset prefix is what actually removes the people.",
+      "mode carries the tags that actually clear the frame.",
     prefix: "visual novel art",
     suffix: "",
     negative: "",
@@ -244,9 +250,9 @@ export const MODES: Mode[] = [
     wantsAlpha: false,
     shot: {
       note:
-        "A background plate. `kind: bg` adds the official `background dataset,` prefix, " +
-        "which is what actually empties the scene of people — describing an empty room in " +
-        "words is far less reliable.",
+        "A background plate. `kind: bg` supplies `no humans, scenery`, which clears the " +
+        "frame without shifting the style — unlike the official `background dataset,` " +
+        "prefix, which empties the scene but makes it look photographic.",
       kind: "bg",
       subject:
         "a sunlit classroom in late afternoon, empty desks in rows, chalkboard, " +
@@ -370,6 +376,58 @@ export const MODES: Mode[] = [
     },
   },
 ]
+
+/** The `kind` values for the visual-novel mode, and what each one changes. */
+export const VN_KINDS: Record<
+  string,
+  { tag: string; alpha: boolean; datasetPrefix: string; width: number; height: number; extra: string }
+> = {
+  sprite: {
+    tag: "visual novel sprite",
+    alpha: true,
+    datasetPrefix: "",
+    width: 832,
+    height: 1216,
+    extra: "full body, standing, isolated, no background",
+  },
+  cg: {
+    tag: "visual novel cg",
+    alpha: false,
+    datasetPrefix: "",
+    width: 1216,
+    height: 832,
+    extra: "",
+  },
+  bg: {
+    tag: "visual novel bg",
+    alpha: false,
+    // NOT "background dataset,". NovelAI documents it for landscapes and still
+    // lifes without people, and it does empty the scene — but in use it drags
+    // the result toward photography, which is the opposite of what a visual
+    // novel background is for. "no humans, scenery" removes the people without
+    // touching the style.
+    datasetPrefix: "",
+    width: 1216,
+    height: 832,
+    extra: "no humans, scenery",
+  },
+  chibi: {
+    tag: "visual novel chibi",
+    alpha: true,
+    datasetPrefix: "",
+    width: 1024,
+    height: 1024,
+    extra: "chibi, isolated, no background",
+  },
+  art: {
+    tag: "visual novel art",
+    alpha: false,
+    datasetPrefix: "",
+    width: 1216,
+    height: 832,
+    extra: "",
+  },
+}
 
 export function modeByName(name: string): Mode | undefined {
   return MODES.find((mode) => mode.name === name)

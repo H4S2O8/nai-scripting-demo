@@ -48,6 +48,7 @@ import {
   MODES,
   Mode,
   TRANSLUCENT_TAG,
+  VN_KINDS,
   composePrompt,
   describeMode,
   modeParams,
@@ -688,55 +689,6 @@ export function buildServer(): McpServer {
   return server
 }
 
-
-/** The `kind` values for the visual-novel mode, and what each one changes. */
-const VN_KINDS: Record<
-  string,
-  { tag: string; alpha: boolean; datasetPrefix: string; width: number; height: number; extra: string }
-> = {
-  sprite: {
-    tag: "visual novel sprite",
-    alpha: true,
-    datasetPrefix: "",
-    width: 832,
-    height: 1216,
-    extra: "full body, standing, isolated, no background",
-  },
-  cg: {
-    tag: "visual novel cg",
-    alpha: false,
-    datasetPrefix: "",
-    width: 1216,
-    height: 832,
-    extra: "",
-  },
-  bg: {
-    tag: "visual novel bg",
-    alpha: false,
-    // Documented as the way to get a scene with no people in it; describing an
-    // empty room in words is far less reliable.
-    datasetPrefix: "background dataset,",
-    width: 1216,
-    height: 832,
-    extra: "no humans, scenery",
-  },
-  chibi: {
-    tag: "visual novel chibi",
-    alpha: true,
-    datasetPrefix: "",
-    width: 1024,
-    height: 1024,
-    extra: "chibi, isolated, no background",
-  },
-  art: {
-    tag: "visual novel art",
-    alpha: false,
-    datasetPrefix: "",
-    width: 1216,
-    height: 832,
-    extra: "",
-  },
-}
 
 function registerMode(server: McpServer, mode: Mode) {
   const isVisualNovel = mode.name === "novelai_visual_novel"
