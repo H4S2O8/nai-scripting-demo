@@ -104,12 +104,27 @@ console.log("mcp server over stdio")
   check(
     "exposes every tool",
     JSON.stringify(names) ===
-      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_verify_tags", "novelai_visual_novel"]),
+      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_visual_novel"]),
     JSON.stringify(names),
   )
   const gen = tools.find((t) => t.name === "novelai_generate_image")
   check("generate declares a prompt parameter", gen.inputSchema?.properties?.prompt != null)
   check("prompt is the only required one", JSON.stringify(gen.inputSchema?.required) === '["prompt"]', JSON.stringify(gen.inputSchema?.required))
+
+  // The mode tools take a subject plus their own switches; these live in
+  // tools.ts, which the modes tests cannot reach.
+  const manga = tools.find((t) => t.name === "novelai_manga_page")
+  const palette = manga?.inputSchema?.properties?.palette
+  check("the manga page offers a palette", palette != null)
+  check("it offers colour and monochrome",
+        JSON.stringify(palette?.enum) === '["color","monochrome"]', JSON.stringify(palette?.enum))
+  check("the palette is optional",
+        !(manga?.inputSchema?.required ?? []).includes("palette"))
+  const vn = tools.find((t) => t.name === "novelai_visual_novel")
+  check("only the visual novel tool takes a kind",
+        vn?.inputSchema?.properties?.kind != null && manga?.inputSchema?.properties?.kind == null)
+  check("only the manga tool takes a palette",
+        vn?.inputSchema?.properties?.palette == null)
 
   const options = await client.callTool({ name: "novelai_list_options", arguments: {} })
   const parsed = JSON.parse(options.content[0].text)
@@ -240,7 +255,7 @@ console.log("http transport")
   check(
     "the same tools are served over http",
     JSON.stringify(httpTools) ===
-      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_verify_tags", "novelai_visual_novel"]),
+      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_visual_novel"]),
     JSON.stringify(httpTools),
   )
   const opts = await httpClient.callTool({ name: "novelai_list_options", arguments: {} })

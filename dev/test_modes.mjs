@@ -125,6 +125,12 @@ console.log("mode defaults")
   check("the manga guidance admits the shot is not official",
         /publishes no example/i.test(manga.guidance))
 
+  // The page used to be hard-wired to "monochrome, screentone", so a colour
+  // page was not expressible at all.
+  check("the manga prefix is palette-neutral",
+        !/monochrome|screentone|greyscale/.test(manga.prefix), manga.prefix)
+  check("the guidance mentions the palette option", /palette/.test(manga.guidance))
+
   check("every canvas is a multiple of 64",
         M.MODES.every((m) => m.width % 64 === 0 && m.height % 64 === 0))
   // Staying inside the Opus free tier is the difference between free and paid.
@@ -176,6 +182,25 @@ for (const mode of M.MODES) {
   check("the VN shot picks a kind", ["sprite", "cg", "bg", "chibi", "art"].includes(vn.shot.kind))
   check("the bg guidance says why the dataset prefix is skipped",
         /photograph/i.test(vn.guidance) && /no humans, scenery/.test(vn.guidance))
+}
+
+console.log("manga palette")
+{
+  const p = M.MANGA_PALETTE
+  check("both palettes exist", p.color != null && p.monochrome != null)
+  // Comic training data skews black and white, so dropping "monochrome" is not
+  // enough on its own — the negative is what actually holds the colour.
+  check("colour negates monochrome", /monochrome/.test(p.color.negative))
+  check("colour negates greyscale and screentone",
+        /greyscale/.test(p.color.negative) && /screentone/.test(p.color.negative))
+  check("colour asks for colour positively", /color/.test(p.color.prompt))
+  check("colour never asks for monochrome", !/monochrome|greyscale/.test(p.color.prompt))
+  check("monochrome asks for the screentoned look",
+        /monochrome/.test(p.monochrome.prompt) && /screentone/.test(p.monochrome.prompt))
+  check("monochrome adds no negative of its own", p.monochrome.negative === "")
+  // The two must not both be applied; assert they cannot agree.
+  check("the two palettes are opposites",
+        !/monochrome/.test(p.color.prompt) && !/monochrome/.test(p.monochrome.negative))
 }
 
 console.log("visual novel kinds")

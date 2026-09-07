@@ -324,13 +324,18 @@ export const MODES: Mode[] = [
       "because the standard presets suppress lettering.\n" +
       "  - Two characters is the safe ceiling. Three or more is reported as " +
       "unstable.\n" +
+      "  - `palette` picks colour or black and white. Colour is the default; " +
+      "pass 'monochrome' for the traditional screentoned look.\n" +
       "  - Tall canvas. The default is 832x1216 — a 1:1.46 page ratio, and the " +
       "largest portrait canvas that still fits the Opus free tier (1 MP). A " +
       "roomier page reads better with four or more panels: pass width 1024 and " +
       "height 1536, and accept that it now costs Anlas.\n" +
       "  - Fewer, larger panels come out far more legible than many small ones. " +
       "Three or four is a realistic ceiling; six is pushing it.",
-    prefix: "manga page, comic, monochrome, screentone, paneled page",
+    // Palette-neutral. "monochrome, screentone" used to live here, which made
+    // every page black and white with no way to ask otherwise; the two options
+    // are in MANGA_PALETTE and chosen per call.
+    prefix: "manga page, comic, paneled page",
     suffix: "clean lineart, speech bubbles",
     negative: "photo, 3d, watermark, signature",
     // 1 MP is the Opus free-tier ceiling, and 832x1216 is the tallest portrait
@@ -428,6 +433,26 @@ export const VN_KINDS: Record<
     extra: "",
   },
 }
+
+/**
+ * How a manga page is coloured.
+ *
+ * Colour is not simply the absence of "monochrome". Comic training data skews
+ * heavily black-and-white, so a page with no palette instruction at all still
+ * tends to come back grey — the negative is what actually holds the colour.
+ */
+export const MANGA_PALETTE = {
+  color: {
+    prompt: "colored, vibrant colors",
+    negative: "monochrome, greyscale, screentone, sketch",
+  },
+  monochrome: {
+    prompt: "monochrome, greyscale, screentone",
+    negative: "",
+  },
+} as const
+
+export type MangaPalette = keyof typeof MANGA_PALETTE
 
 export function modeByName(name: string): Mode | undefined {
   return MODES.find((mode) => mode.name === name)

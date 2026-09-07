@@ -12,7 +12,8 @@
  *                          Generation picks per request — see pool.ts.
  *   NOVELAI_TOKEN          a single pst- token; folded into the same pool
  *   NOVELAI_OUTPUT_DIR     optional, defaults to ~/Pictures/NovelAI
- *   NOVELAI_INLINE_IMAGES  "0" to make returnImage default to off
+ *   NOVELAI_INLINE_IMAGES  "1" to inline a preview when imageSize is omitted;
+ *                          off by default, so an omitted imageSize means none
  *   NOVELAI_PUBLIC_URL     optional, base URL that serves NOVELAI_OUTPUT_DIR
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -41,13 +42,14 @@ import {
   rollSeed,
 } from "../nai"
 import { firstPng } from "./zip"
-import { Lookup, lookup } from "./tags"
 import { r2Config, uploadToR2 } from "./r2"
 import { Lease, acquire, fail, poolSize, refreshAll, status, succeed } from "./pool"
 import {
   MODES,
   Mode,
   TRANSLUCENT_TAG,
+  MANGA_PALETTE,
+  MangaPalette,
   VN_KINDS,
   composePrompt,
   describeMode,
@@ -57,7 +59,17 @@ import {
 
 const IMAGE_HOST = "https://image.novelai.net"
 
-
+/**
+ * Shared wording for `imageSize`, so every generation tool states the same
+ * default. Nothing is inlined unless the caller asks: the picture is always
+ * reachable by link, and an inlined one is paid for again on every later turn.
+ */
+const IMAGE_SIZE_HELP =
+  "How much image to put in the conversation. none (the default) inlines nothing and returns " +
+  "only the link; preview inlines a small JPEG; full inlines the original PNG (~2MB of base64). " +
+  "An inlined image stays in the history and is resent every turn, so ask for preview only when " +
+  "the user wants to look at the result, and leave it off while iterating on prompts or " +
+  "generating drafts. The full-resolution file is linked in every case."
 
 function outputDir(): string {
   const dir = process.env.NOVELAI_OUTPUT_DIR?.trim() || join(homedir(), "Pictures", "NovelAI")
@@ -269,9 +281,16 @@ async function generateWithFailover(params: GenerateParams, seed: number) {
   throw lastError
 }
 
-/** Inline images by default: getting the picture into the conversation is the point. */
+/**
+ * Whether an omitted `imageSize` should still inline a preview.
+ *
+ * Off. An inlined image is resent on every later turn, so a caller that never
+ * said it wanted to look at the picture should not be charged for carrying it
+ * — the link is always in the text. Set NOVELAI_INLINE_IMAGES=1 to go back to
+ * inlining a preview by default.
+ */
 function inlineByDefault(): boolean {
-  return (process.env.NOVELAI_INLINE_IMAGES ?? "1").trim() !== "0"
+  return (process.env.NOVELAI_INLINE_IMAGES ?? "0").trim() === "1"
 }
 
 /**
@@ -343,14 +362,7 @@ export function buildServer(): McpServer {
         imageSize: z
           .enum(["preview", "full", "none"])
           .optional()
-          .describe(
-            "How much image to put in the conversation. preview (default) inlines a small JPEG; " +
-              "full inlines the original PNG (~2MB of base64); none inlines nothing and returns " +
-              "only the link. An inlined image stays in the history and is resent every turn, so " +
-              "prefer none while iterating on prompts or generating drafts the user has not asked " +
-              "to look at, and preview when they want to see the result. The full-resolution file " +
-              "is linked in every case.",
-          ),
+          .describe(IMAGE_SIZE_HELP),
         previewWidth: z
           .number()
           .int()
@@ -477,7 +489,9 @@ export function buildServer(): McpServer {
       const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] =
         [{ type: "text", text: summary }]
       const wantsImage =
-        args.imageSize === "none" ? false : (args.returnImage ?? inlineByDefault())
+        args.imageSize === "none"
+          ? false
+          : args.imageSize != null || (args.returnImage ?? inlineByDefault())
       if (wantsImage) {
         const inline = inlineImage(args.imageSize, lastPng, lastPath, args.previewWidth)
         if (inline) content.push(inline)
@@ -578,108 +592,6 @@ export function buildServer(): McpServer {
     },
   )
 
-  server.registerTool(
-    "novelai_verify_tags",
-    {
-      title: "Check whether NovelAI knows these tags",
-      description:
-        "Look character, artist or concept names up in NovelAI's own tag index and " +
-        "report how much training data stands behind each one. Use this before " +
-        "putting a name in a prompt or a tag library.\n" +
-        "\n" +
-        "IMPORTANT — the underlying endpoint is a FUZZY autocomplete, so a response " +
-        "is not evidence. Querying nonsense returns confident-looking neighbours. " +
-        "This tool therefore reports `kind`:\n" +
-        "  exact     — the name is itself a tag. Use `match`.\n" +
-        "  qualified — the name is a tag once the series is appended, e.g. " +
-        "'ganyu' resolves to 'ganyu (genshin impact)'. Use `match`, not the bare name.\n" +
-        "  none      — nothing matched. The model does not know this name; the " +
-        "`candidates` are just the autocomplete's nearest neighbours, NOT substitutes.\n" +
-        "\n" +
-        "`count` is the number of training images behind the tag and saturates at " +
-        "10000. It discriminates at the low end: a few hundred means the model has " +
-        "seen the character but will be unreliable.",
-      inputSchema: {
-        queries: z
-          .array(z.string())
-          .min(1)
-          .max(40)
-          .describe("Names to check. Spaces, not underscores. Batched to save round trips."),
-        model: z
-          .string()
-          .optional()
-          .describe(`Tag knowledge is per model family. Default ${DEFAULT_PARAMS.model}.`),
-        minCount: z
-          .number()
-          .int()
-          .optional()
-          .describe("Also flag matches below this count as weak. Default 0 (flag nothing)."),
-      },
-    },
-    async (args) => {
-      const model = args.model ?? DEFAULT_PARAMS.model
-      const floor = args.minCount ?? 0
-      // One lease for the whole batch: these are free lookups, not generations,
-      // so there is nothing to balance and no reason to re-pick per query.
-      let lease: Lease
-      try {
-        lease = await acquire({ ...DEFAULT_PARAMS, width: 64, height: 64, steps: 1, batch: 1 })
-      } catch (error) {
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: error instanceof Error ? error.message : String(error) },
-          ],
-        }
-      }
-
-      const results: (Lookup & { weak?: boolean })[] = []
-      try {
-        for (const query of args.queries) {
-          const found = await lookup(lease.account.token, query, model)
-          results.push(
-            floor > 0 && found.kind !== "none" && found.count < floor
-              ? { ...found, weak: true }
-              : found,
-          )
-        }
-        succeed(lease)
-      } catch (error) {
-        fail(lease, error)
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "查询失败：" + (error instanceof Error ? error.message : String(error)),
-            },
-          ],
-        }
-      }
-
-      const known = results.filter((r) => r.kind !== "none")
-      const summary = {
-        model,
-        checked: results.length,
-        known: known.length,
-        unknown: results.filter((r) => r.kind === "none").map((r) => r.query),
-        results: results.map((r) => ({
-          query: r.query,
-          kind: r.kind,
-          match: r.match || null,
-          count: r.kind === "none" ? null : r.count,
-          ...(r.weak ? { weak: true } : {}),
-          // Only for the misses, where the caller may want to pick manually.
-          // Including them everywhere buried the answer in noise.
-          ...(r.kind === "none"
-            ? { nearest: r.candidates.slice(0, 5).map((c) => `${c.tag} (${c.count})`) }
-            : {}),
-        })),
-      }
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] }
-    },
-  )
-
   // One registration per mode, all sharing the implementation below. Separate
   // tools rather than a `mode` argument on the generic one: the description is
   // where the V5 standard actually reaches the caller, and a tool the model can
@@ -692,6 +604,7 @@ export function buildServer(): McpServer {
 
 function registerMode(server: McpServer, mode: Mode) {
   const isVisualNovel = mode.name === "novelai_visual_novel"
+  const isManga = mode.name === "novelai_manga_page"
   server.registerTool(
     mode.name,
     {
@@ -709,6 +622,18 @@ function registerMode(server: McpServer, mode: Mode) {
               kind: z
                 .enum(["sprite", "cg", "bg", "chibi", "art"])
                 .describe("Which visual-novel asset. See the tool description."),
+            }
+          : {}),
+        ...(isManga
+          ? {
+              palette: z
+                .enum(["color", "monochrome"])
+                .optional()
+                .describe(
+                  "Colour (default) or traditional black-and-white with screentone. " +
+                    "Comic training data skews black-and-white, so colour is held by an " +
+                    "explicit negative rather than by omitting 'monochrome'.",
+                ),
             }
           : {}),
         translucent: z
@@ -744,12 +669,24 @@ function registerMode(server: McpServer, mode: Mode) {
             "Per-character captions. For a manga page these are how you pin who " +
               "appears in which panel: x/y are 0..1 from the top-left.",
           ),
-        imageSize: z.enum(["preview", "full", "none"]).optional(),
-        previewWidth: z.number().int().min(128).max(2048).optional(),
+        imageSize: z.enum(["preview", "full", "none"]).optional().describe(IMAGE_SIZE_HELP),
+        previewWidth: z
+          .number()
+          .int()
+          .min(128)
+          .max(2048)
+          .optional()
+          .describe(
+            `Width of the inlined preview in pixels. Default ${defaultPreviewWidth()}. ` +
+              "Smaller costs proportionally fewer tokens for every turn it stays in history.",
+          ),
       },
     },
     async (args: Record<string, any>) => {
       const vn = isVisualNovel ? VN_KINDS[args.kind ?? "art"] : null
+      const palette = isManga
+        ? MANGA_PALETTE[(args.palette ?? "color") as MangaPalette]
+        : null
       const wantsAlpha = vn ? vn.alpha : mode.wantsAlpha
 
       const base = modeParams(mode)
@@ -762,9 +699,11 @@ function registerMode(server: McpServer, mode: Mode) {
       const withTranslucent = args.translucent ? prefixParts + ", " + TRANSLUCENT_TAG : prefixParts
       const effective: Mode = vn
         ? { ...mode, prefix: withTranslucent, suffix: vn.extra, width: vn.width, height: vn.height }
-        : args.translucent
-          ? { ...mode, prefix: [mode.prefix, TRANSLUCENT_TAG].filter(Boolean).join(", ") }
-          : mode
+        : palette
+          ? { ...mode, prefix: [mode.prefix, palette.prompt].filter(Boolean).join(", ") }
+          : args.translucent
+            ? { ...mode, prefix: [mode.prefix, TRANSLUCENT_TAG].filter(Boolean).join(", ") }
+            : mode
 
       const fitted = fitSize(
         args.width ?? effective.width ?? base.width,
@@ -776,7 +715,9 @@ function registerMode(server: McpServer, mode: Mode) {
         stylePrompt: "",
         characterPrompt: "",
         prompt: composePrompt(effective, args.subject ?? "", vn?.datasetPrefix ?? ""),
-        negative: [mode.negative, args.negative ?? ""].filter(Boolean).join(", "),
+        negative: [mode.negative, palette?.negative ?? "", args.negative ?? ""]
+          .filter(Boolean)
+          .join(", "),
         width: fitted.width,
         height: fitted.height,
         steps: args.steps ?? effective.steps,
@@ -821,7 +762,8 @@ function registerMode(server: McpServer, mode: Mode) {
       }
 
       const lines = [
-        `${mode.title}${vn ? ` · ${args.kind}` : ""} · ${results.length} 张 · ${params.width}×${params.height}`,
+        `${mode.title}${vn ? ` · ${args.kind}` : ""}${isManga ? ` · ${args.palette ?? "color"}` : ""}` +
+          ` · ${results.length} 张 · ${params.width}×${params.height}`,
         `seed: ${results.map((r) => r.seed).join(", ")}`,
         `实际发送的提示词: ${effectivePrompt(params)}`,
       ]
