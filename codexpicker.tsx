@@ -14,6 +14,7 @@
 import {
   Button,
   HStack,
+  Image,
   NavigationStack,
   ScrollView,
   Spacer,
@@ -32,6 +33,7 @@ import {
   childrenAt,
   clearCodexCache,
   entriesUnder,
+  inBatch,
   loadCodex,
   loadCodexList,
   loadDrawn,
@@ -45,6 +47,7 @@ import { Card, Chip } from "./ui"
 import { ACCENT, PAGE_BG } from "./theme"
 
 const PATH_KEY = "nai.codex.lastpath.v1"
+const BATCH_KEY = "nai.codex.lastbatch.v1"
 
 export type CodexPick = {
   entry: CodexEntry
@@ -109,6 +112,8 @@ export function CodexPickerSheet({
   const [busy, setBusy] = useState(false)
   const [last, setLast] = useState<CodexPick | null>(null)
   const [drawn, setDrawn] = useState<Record<string, boolean>>({})
+  // An update batch id, or "" for all. The site's own "8.31更新" buttons.
+  const [batch, setBatch] = useState("")
 
   const say = (line: string) => setStatus(line)
 
@@ -126,6 +131,13 @@ export function CodexPickerSheet({
         childrenAt(loaded.codex.tree, remembered.slice(0, i)).some((n) => n.name === remembered[i]),
       )
       setPath(valid ? remembered : [])
+      const rememberedBatch = Storage.get<string>(BATCH_KEY)
+      setBatch(
+        typeof rememberedBatch === "string" &&
+          target.updateFilters.some((f) => f.id === rememberedBatch)
+          ? rememberedBatch
+          : "",
+      )
       say(
         `${loaded.codex.title} · ${loaded.codex.entries.length} 条` +
           (loaded.fromCache ? " · 本地缓存" : " · 已更新到最新"),
@@ -175,12 +187,18 @@ export function CodexPickerSheet({
     }
   }
 
-  const pool = codex ? entriesUnder(codex.entries, path) : []
+  // Category first, then batch: the count on each batch chip is for the
+  // current category, which is the number the user is about to draw from.
+  const inScope = codex ? entriesUnder(codex.entries, path) : []
+  const pool = inBatch(inScope, batch)
+  const batchCount = (id: string) => inBatch(inScope, id).length
   // Once drawn, an entry stays out until the user resets — the point of a
   // random draw is to see something new.
   const fresh = undrawn(pool, drawn)
   const exhausted = pool.length > 0 && fresh.length === 0
-  const scope = path.length ? path.join(" › ") : codex?.title ?? ""
+  const batchLabel = batch ? meta?.updateFilters.find((f) => f.id === batch)?.label ?? batch : ""
+  const scope =
+    (path.length ? path.join(" › ") : codex?.title ?? "") + (batchLabel ? ` · ${batchLabel}` : "")
 
   const draw = () => {
     if (!codex) return
@@ -232,6 +250,37 @@ export function CodexPickerSheet({
             onSelect={(name) => choose(rail.depth, name)}
           />
         ))}
+
+        {/* Update batches, as on the site. Counts are within the chosen
+            category, so a batch that has nothing here reads as 0. */}
+        {meta && meta.updateFilters.length > 0 ? (
+          <ScrollView axes="horizontal" scrollIndicator="hidden">
+            <HStack spacing={8}>
+              <Image systemName="calendar" font={11} foregroundStyle="tertiaryLabel" />
+              <Chip
+                label="全部批次"
+                selected={batch === ""}
+                disabled={busy}
+                onTap={() => {
+                  setBatch("")
+                  Storage.set(BATCH_KEY, "")
+                }}
+              />
+              {meta.updateFilters.map((filter) => (
+                <Chip
+                  key={filter.id}
+                  label={`${filter.latest ? "NEW " : ""}${filter.label} ${batchCount(filter.id)}`}
+                  selected={batch === filter.id}
+                  disabled={busy || batchCount(filter.id) === 0}
+                  onTap={() => {
+                    setBatch(filter.id)
+                    Storage.set(BATCH_KEY, filter.id)
+                  }}
+                />
+              ))}
+            </HStack>
+          </ScrollView>
+        ) : null}
 
         <Card
           title={scope || "…"}

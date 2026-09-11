@@ -25,7 +25,15 @@ export type CodexMeta = {
   nsfw: boolean
   /** Some codices are hosted elsewhere and only listed here. */
   dataUrl?: string
+  /**
+   * The site's update batches, newest last — what its "7.15更新 / 8.31更新"
+   * buttons filter by. Each entry names the batches it was added or changed
+   * in; entries from before batches were tracked name none.
+   */
+  updateFilters: UpdateFilter[]
 }
+
+export type UpdateFilter = { id: string; label: string; latest: boolean }
 
 export type CodexNode = {
   name: string
@@ -47,6 +55,8 @@ export type CodexEntry = {
    * meant to be appended to whatever character already sits in each slot.
    */
   characters: string[]
+  /** Update batch ids this entry belongs to; empty for the original body. */
+  batches: string[]
   /**
    * Whether any character prompt names hair, eyes, ears, horns and the like.
    * Rare (4%), but such an entry will fight the user's own character rather
@@ -66,7 +76,7 @@ export type Codex = {
   entries: CodexEntry[]
 }
 
-const CACHE_SCHEMA = 3
+const CACHE_SCHEMA = 4
 
 /* ------------------------------------------------------------ tree helpers */
 
@@ -107,6 +117,12 @@ export function entriesUnder(entries: CodexEntry[], path: string[]): CodexEntry[
     }
     return true
   })
+}
+
+/** Entries in an update batch; "" is every batch, i.e. no filter. */
+export function inBatch(list: CodexEntry[], batch: string): CodexEntry[] {
+  if (!batch) return list
+  return list.filter((entry) => entry.batches.indexOf(batch) !== -1)
 }
 
 export function randomEntry(list: CodexEntry[]): CodexEntry | null {
@@ -178,6 +194,13 @@ function parseCodexList(raw: any): CodexMeta[] {
       entryCount: Number(item.entryCount ?? 0),
       nsfw: item.nsfw === true,
       dataUrl: typeof item.dataUrl === "string" ? item.dataUrl : undefined,
+      updateFilters: (Array.isArray(item.updateFilters) ? item.updateFilters : [])
+        .filter((f: any) => f && typeof f.id === "string" && f.id)
+        .map((f: any) => ({
+          id: String(f.id),
+          label: String(f.label ?? f.id),
+          latest: f.latest === true,
+        })),
     }))
 }
 
@@ -268,6 +291,9 @@ export function slim(raw: any, id: string, release: string): Codex {
       path: Array.isArray(entry.path) ? entry.path.map((seg: any) => String(seg)) : [],
       tags: String(entry.tags ?? "").trim().replace(/^[,\s]+|[,\s]+$/g, ""),
       characters: characterPromptsOf(entry),
+      batches: Array.isArray(entry.updateBatches)
+        ? entry.updateBatches.map((b: any) => String(b)).filter(Boolean)
+        : [],
       identity: characterPromptsOf(entry).some((prompt) => IDENTITY_WORDS.test(prompt)),
     }))
   return {

@@ -58,12 +58,12 @@ check("children of nowhere", C.childrenAt(tree, ["不存在"]).length === 0)
 
 console.log("drawing entries")
 const entries = [
-  { id: "e-a", title: "a", path: ["基础涩涩", "各种体位"], tags: "1girl, x", characters: [], identity: false },
-  { id: "e-b", title: "b", path: ["基础涩涩", "各种体位"], tags: "1girl, y", characters: [], identity: false },
-  { id: "e-c", title: "c", path: ["基础涩涩", "其他"], tags: "1girl, z", characters: [], identity: false },
-  { id: "e-d", title: "d", path: ["杂项"], tags: "1girl, w", characters: [], identity: false },
-  { id: "e-empty", title: "empty", path: ["基础涩涩", "其他"], tags: "   ", characters: [], identity: false },
-  { id: "e-chars", title: "chars only", path: ["基础涩涩", "其他"], tags: "", characters: ["girl, kneeling"], identity: false },
+  { id: "e-a", title: "a", path: ["基础涩涩", "各种体位"], tags: "1girl, x", characters: [], batches: ["2026.8.31"], identity: false },
+  { id: "e-b", title: "b", path: ["基础涩涩", "各种体位"], tags: "1girl, y", characters: [], batches: [], identity: false },
+  { id: "e-c", title: "c", path: ["基础涩涩", "其他"], tags: "1girl, z", characters: [], batches: ["2026.7.15", "2026.8.31"], identity: false },
+  { id: "e-d", title: "d", path: ["杂项"], tags: "1girl, w", characters: [], batches: ["2026.7.15"], identity: false },
+  { id: "e-empty", title: "empty", path: ["基础涩涩", "其他"], tags: "   ", characters: [], batches: [], identity: false },
+  { id: "e-chars", title: "chars only", path: ["基础涩涩", "其他"], tags: "", characters: ["girl, kneeling"], batches: [], identity: false },
 ]
 check("a parent category includes every subcategory", C.entriesUnder(entries, ["基础涩涩"]).length === 4)
 check("a leaf is exact", C.entriesUnder(entries, ["基础涩涩", "各种体位"]).length === 2)
@@ -93,6 +93,14 @@ if (existsSync(snapshot)) {
   // The identity flag: rare, and it must be the hair/eyes kind, not body shape.
   const flagged = slimEntries.filter((e) => e.identity)
   check("identity is flagged on a small minority (" + flagged.length + ")", flagged.length > 50 && flagged.length < 600)
+  const batched = slimEntries.filter((e) => e.batches.length).length
+  check("update batches are kept (" + batched + " entries)", batched > 1000)
+  check("the latest batch is drawable", C.inBatch(slimEntries, "2026.8.31").length > 100)
+  check("most of the body predates batches", slimEntries.filter((e) => e.batches.length === 0).length > 9000)
+  const listed = JSON.parse(readFileSync(join(snapshot, "..", "codexes.json"), "utf8")).find((c) => c.id === "suozhang_r18")
+  if (listed) {
+    check("the codex list carries the batch labels", Array.isArray(listed.updateFilters) && listed.updateFilters.length === 3)
+  }
   check("a flagged entry really names hair or eyes",
         flagged.slice(0, 20).every((e) => e.characters.some((c) => /hair|eyes|ears|horn|halo|wings|twintail|ponytail|braid|bangs|elf/i.test(c))))
   check("curvy alone does not flag", !slimEntries.some((e) => e.identity && e.characters.join(" ").match(/^[^]*$/) && !e.characters.some((c) => /hair|eyes|ears|horn|halo|wings|twintail|ponytail|braid|bangs|elf|blonde/i.test(c))))
@@ -102,6 +110,19 @@ if (existsSync(snapshot)) {
   check("基础涩涩 has drawable entries", drawable.length > 1000, String(drawable.length))
   check("all of them have a base or characters", drawable.every((e) => e.tags.trim().length > 0 || e.characters.length > 0))
   check("all of them have a title", drawable.every((e) => e.title.trim().length > 0))
+}
+
+console.log("update batches")
+{
+  const all = C.entriesUnder(entries, [])
+  check("no batch means no filter", C.inBatch(all, "").length === all.length)
+  check("a batch narrows to its members", C.inBatch(all, "2026.8.31").map((e) => e.id).sort().join() === "e-a,e-c")
+  check("an entry can be in two batches", C.inBatch(all, "2026.7.15").some((e) => e.id === "e-c"))
+  check("the original body has no batch", !C.inBatch(all, "2026.7.15").some((e) => e.id === "e-b"))
+  check("an unknown batch is empty", C.inBatch(all, "1999.1.1").length === 0)
+  // Category first, then batch: the composition must commute with scope.
+  const scoped = C.entriesUnder(entries, ["基础涩涩", "各种体位"])
+  check("batch within a category", C.inBatch(scoped, "2026.8.31").map((e) => e.id).join() === "e-a")
 }
 
 console.log("drawn record")
