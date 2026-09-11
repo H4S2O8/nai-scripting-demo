@@ -27,6 +27,9 @@ echo
 echo "== history store =="
 node dev/test_store.mjs
 echo
+echo "== codex (quicktagcloud) =="
+node dev/test_codex.mjs
+echo
 echo "== raw DEFLATE vs node zlib =="
 node dev/test_inflate.mjs
 echo

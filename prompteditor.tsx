@@ -30,10 +30,12 @@ import { Chunk, categoriesOf, createChunk, saveCache } from "./chunks"
 import {
   PromptToken,
   addTags,
+  appendChunk,
   expandPrompt,
   expandToken,
   parsePrompt,
   removeToken,
+  replaceChunk,
   serializePrompt,
   setText,
   chunkStateIn,
@@ -43,6 +45,7 @@ import {
 } from "./prompttokens"
 import { ChunkGrid } from "./chunkgrid"
 import { ChunkEditorSheet } from "./chunkeditor"
+import { CodexPick, CodexPickerSheet } from "./codexpicker"
 import { Chip } from "./ui"
 import { ACCENT, PAGE_BG, RADIUS_CHIP, RADIUS_WELL, WELL_BG } from "./theme"
 
@@ -148,12 +151,17 @@ export function PromptEditor({
   const [raw, setRaw] = useState(false)
   const [rawText, setRawText] = useState("")
   const [saving, setSaving] = useState<string | null>(null)
+  // A counter rather than a boolean: it is the picker's sessionKey, and a
+  // sheet's content is not rebuilt between presentations.
+  const [picker, setPicker] = useState(0)
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   useEffect(() => {
     setTokens(withTrailingText(parsePrompt(value)))
     setRaw(false)
     setRawText("")
     setSaving(null)
+    setPickerOpen(false)
   }, [editorKey])
 
   const rows = layoutRows(tokens)
@@ -171,6 +179,24 @@ export function PromptEditor({
   const leaveRaw = () => {
     setTokens(withTrailingText(parsePrompt(addTags("", rawText))))
     setRaw(false)
+  }
+
+  /**
+   * A codex draw lands as a chunk whose expansion is the entry's prompt and
+   * whose label is the entry's title on the site — so it reads like a library
+   * chunk, expands on double-tap like one, and is never saved anywhere.
+   */
+  const takePick = (pick: CodexPick, replacing: CodexPick | null) => {
+    const label = pick.entry.title || pick.path[pick.path.length - 1] || "词典"
+    setTokens((prev) =>
+      withTrailingText(
+        tidy(
+          replacing
+            ? replaceChunk(prev, replacing.entry.title, label, pick.entry.tags)
+            : appendChunk(prev, label, pick.entry.tags),
+        ),
+      ),
+    )
   }
 
   const commit = () => {
@@ -295,13 +321,40 @@ export function PromptEditor({
           </VStack>
         )}
 
-        <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+        {/* The picker's sheet hangs here, not on the outer VStack: that one
+            already carries the chunk-editor sheet, and two sheet modifiers on
+            one node is not a documented combination on this platform. */}
+        <HStack
+          spacing={8}
+          frame={{ maxWidth: "infinity", alignment: "leading" }}
+          sheet={{
+            isPresented: pickerOpen,
+            onChanged: setPickerOpen,
+            content: (
+              <CodexPickerSheet
+                sessionKey={editorKey + "|codex|" + picker}
+                onPick={takePick}
+                onClose={() => setPickerOpen(false)}
+              />
+            ),
+          }}
+        >
           <Text font={11} foregroundStyle="tertiaryLabel">
             {raw
               ? "chunk 已展开为文本，返回后不会还原"
               : `${chunkCount} 个 chunk · 双击展开 · 长按文本可存为 chunk`}
           </Text>
           <Spacer />
+          {raw ? null : (
+            <Chip
+              label="词典随机"
+              selected={false}
+              onTap={() => {
+                setPicker((n) => n + 1)
+                setPickerOpen(true)
+              }}
+            />
+          )}
           <Chip
             label={raw ? "返回标签" : "原文"}
             selected={raw}

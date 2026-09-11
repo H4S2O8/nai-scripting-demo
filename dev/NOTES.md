@@ -239,3 +239,23 @@ return / 回调里的 return / 字符串里的花括号（UC 预设里就有 `{b
 2. `script.json` 的 `version` 加一
 3. `./dev/pack.sh`
 4. 推送；手机等一个 `autoUpdateInterval`（600 秒）
+
+## 词典随机：为什么整本下载、以及 ?p= 怎么反解
+
+novelai.quicktagcloud.com 是纯静态站：`data/current.json` 指向当前 release，
+`releases/<r>/<法典id>.json` 一个文件装整本（树 + 全部条目）。没有按分类的接口，
+所以只能整本下——`suozhang_r18` 是 8.3 MB，其中大半是配图元数据。落盘前
+瘦身成 `{title, path, tags}`（4.2 MB），按 release 缓存；之后每次只拉指针那几百字节。
+指针拉不到时直接用缓存并注明，抽随机这种功能宁可稍旧也别没有。
+
+`?p=` 短码是分类路径的 FNV-1a（base36），分隔符是 U+001F。`codex.ts` 逐字移植了
+站上的 `path-code.js`，并用真实数据验过：`1vpbhbm` ↔ `['基础涩涩']`，112 个叶子
+全部往返一致。因此贴一个站上的链接就能直接跳到那个分类，不需要问网站。
+
+抽出来的条目以 chunk token 落进提示词：`label` 是站上的条目标题，`expansion` 是
+它的 prompt。展开文本内联在标记里（见上一节），所以它**不进词库、不进账户**，
+但显示和双击展开与库里的 chunk 完全一致。「换一个」按 label 原地替换；
+用户手动删掉后再点，则退化为追加——不能让按钮看起来没反应。
+
+第二个 sheet 挂在 chip 那行 HStack 上，不挂外层 VStack：外层已经挂着
+chunk 编辑器的 sheet，同一节点两个 sheet 修饰符不是文档里的组合。

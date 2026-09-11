@@ -199,6 +199,50 @@ console.log("hostile input")
 }
 
 
+console.log("temporary chunks (codex draws)")
+{
+  const text = (t) => ({ kind: "text", text: t })
+  const chunk = (label, expansion) => ({ kind: "chunk", label, expansion })
+
+  const base = [text("1girl, ")]
+  const added = P.appendChunk(base, "体位A", "missionary, on back")
+  check("append lands a chunk at the end", added[added.length - 1].kind === "chunk" && added[added.length - 1].label === "体位A")
+  check("append keeps the text before it", added[0].kind === "text" && added[0].text.startsWith("1girl"))
+  // The expansion is inside the marker, so the chunk needs no library entry.
+  check("the drawn prompt survives serialize → parse",
+        P.parsePrompt(P.serializePrompt(added)).some((t) => t.kind === "chunk" && t.expansion === "missionary, on back"))
+  check("expanding sends the prompt, not the title", P.expandPrompt(P.serializePrompt(added)).includes("missionary, on back") && !P.expandPrompt(P.serializePrompt(added)).includes("体位A"))
+  check("an empty draw is ignored", P.appendChunk(base, "x", "   ").length === base.length)
+
+  // 换一个: the old chunk is swapped where it stands, not stacked.
+  const swapped = P.replaceChunk(added, "体位A", "体位B", "cowgirl position")
+  check("replace keeps the token count", swapped.length === added.length)
+  check("replace swaps the label", swapped.some((t) => t.kind === "chunk" && t.label === "体位B"))
+  check("replace swaps the expansion", swapped.some((t) => t.kind === "chunk" && t.expansion === "cowgirl position"))
+  check("the old chunk is gone", !swapped.some((t) => t.kind === "chunk" && t.label === "体位A"))
+
+  // The user removed the temporary chunk by hand, then hit 换一个: it must
+  // still do something visible.
+  const without = added.filter((t) => t.kind !== "chunk")
+  const fallback = P.replaceChunk(without, "体位A", "体位C", "doggystyle")
+  check("replacing a missing chunk appends instead", fallback.some((t) => t.kind === "chunk" && t.label === "体位C"))
+
+  // Two chunks with the same label: replace touches the first only, and
+  // never both — a draw replaces one pick, not a family of them.
+  const twins = [chunk("同名", "a"), text(", "), chunk("同名", "b")]
+  const one = P.replaceChunk(twins, "同名", "新", "c")
+  check("replace touches one chunk, not every namesake",
+        one.filter((t) => t.kind === "chunk" && t.label === "新").length === 1 &&
+        one.some((t) => t.kind === "chunk" && t.expansion === "b"))
+
+  // Titles from the site contain commas and colons; they must not break the
+  // marker or leak into the sent prompt.
+  const odd = P.appendChunk(base, "NAI4.5时期：a, b", "artist:x, 0.6::y::")
+  const round = P.parsePrompt(P.serializePrompt(odd))
+  check("a title with punctuation round-trips", round.some((t) => t.kind === "chunk" && t.label === "NAI4.5时期：a, b"))
+  check("a weighted expansion round-trips", round.some((t) => t.kind === "chunk" && t.expansion === "artist:x, 0.6::y::"))
+}
+
 console.log("prompt composition (nai.ts)")
 {
   const dest2 = join(out, "nai.mjs")
