@@ -15,9 +15,6 @@ const DATA = SITE + "/data"
 const CACHE_DIR = "/.codex"
 const CODEX_LIST_KEY = "nai.codex.list.v1"
 
-/** The codex this feature was built for; the picker starts here. */
-export const DEFAULT_CODEX = "suozhang_r18"
-
 export type CodexMeta = {
   id: string
   name: string

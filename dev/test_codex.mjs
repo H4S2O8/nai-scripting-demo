@@ -125,6 +125,28 @@ console.log("update batches")
   check("batch within a category", C.inBatch(scoped, "2026.8.31").map((e) => e.id).join() === "e-a")
 }
 
+console.log("artist codex snapshot")
+{
+  const art = "/private/tmp/claude-501/-Users-huzhecheng-Projects/463d3901-aad2-4b9f-9538-3854110fc223/scratchpad/artist_nai5.json"
+  if (existsSync(art)) {
+    const raw = JSON.parse(readFileSync(art, "utf8"))
+    const slimmed = C.slim(raw, "artist_nai5_personal", "r-test")
+    const latest = C.inBatch(slimmed.entries, "2026.9.10")
+    check("the 9.10 batch is what the user pointed at (" + latest.length + ")", latest.length > 300)
+    check("every artist entry is drawable", C.entriesUnder(slimmed.entries, []).length === slimmed.entries.length)
+    // Contributors differ: most write "artist:name", some a bare name. Both
+    // are valid NovelAI syntax, so the string is inserted as the site has it.
+    const prefixed = latest.filter((e) => /^artist:/.test(e.tags)).length
+    check("most artist strings carry the artist: prefix (" + prefixed + "/" + latest.length + ")", prefixed > latest.length / 2)
+    check("every artist string is non-empty", latest.every((e) => e.tags.trim().length > 0))
+    check("artist entries carry no characters", latest.every((e) => e.characters.length === 0))
+    // Every entry in this codex is batched, unlike 所长色色.
+    check("every artist entry is batched", slimmed.entries.every((e) => e.batches.length > 0))
+  } else {
+    console.log("  (no artist snapshot; skipped)")
+  }
+}
+
 console.log("drawn record")
 {
   delete STORE["nai.codex.drawn.cx"]

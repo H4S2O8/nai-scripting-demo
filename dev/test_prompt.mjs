@@ -199,6 +199,43 @@ console.log("hostile input")
 }
 
 
+console.log("tagged chunks (artist draws)")
+{
+  const P2 = P
+  const PREFIX = "🎨 "
+  const block = "watercolor, soft light"
+  const one = P2.upsertTaggedChunk(block, PREFIX, "kanae_(cookie)", "artist:kanae_(cookie), year 2025")
+  check("a draw appends to the block", P2.expandPrompt(one).endsWith("artist:kanae_(cookie), year 2025"))
+  check("the user's text is untouched", P2.expandPrompt(one).startsWith("watercolor, soft light"))
+  const found = P2.findTaggedChunk(one, PREFIX)
+  check("the draw is findable by its prefix", found != null && found.label === "🎨 kanae_(cookie)")
+  check("its expansion is the artist string", found != null && found.expansion === "artist:kanae_(cookie), year 2025")
+  check("the label shows the prefix in the editor", P2.summarizePrompt(one).includes("[🎨 kanae_(cookie)]"))
+
+  // 换一个: the previous draw is replaced where it sits, not stacked.
+  const two = P2.upsertTaggedChunk(one, PREFIX, "ruiuncle", "artist:ruiuncle, year 2025")
+  check("a second draw replaces the first", P2.parsePrompt(two).filter((t) => t.kind === "chunk").length === 1)
+  check("the second draw's string is what remains", P2.expandPrompt(two).includes("ruiuncle") && !P2.expandPrompt(two).includes("kanae"))
+
+  // Other chunks in the block are not the draw's business.
+  const withOwn = P2.serializePrompt([
+    { kind: "chunk", label: "我的画风", expansion: "oil painting" },
+    { kind: "text", text: ", " },
+  ])
+  const mixed = P2.upsertTaggedChunk(withOwn, PREFIX, "eita_789", "artist:eita_789")
+  check("a user's own chunk is left alone", P2.findTaggedChunk(mixed, "我的") != null)
+  check("the draw sits beside it", P2.parsePrompt(mixed).filter((t) => t.kind === "chunk").length === 2)
+  const swapped = P2.upsertTaggedChunk(mixed, PREFIX, "other", "artist:other")
+  check("re-drawing swaps only the tagged one", P2.parsePrompt(swapped).filter((t) => t.kind === "chunk").length === 2 &&
+        P2.findTaggedChunk(swapped, "我的") != null && P2.findTaggedChunk(swapped, PREFIX).label === "🎨 other")
+
+  check("removing drops only the draw", P2.findTaggedChunk(P2.removeTaggedChunk(swapped, PREFIX), PREFIX) === null &&
+        P2.findTaggedChunk(P2.removeTaggedChunk(swapped, PREFIX), "我的") != null)
+  check("removing from a block without one is a no-op", P2.removeTaggedChunk(block, PREFIX) === block)
+  check("an empty draw is ignored", P2.upsertTaggedChunk(block, PREFIX, "x", "  ") === block)
+  check("nothing found in a plain block", P2.findTaggedChunk(block, PREFIX) === null)
+}
+
 console.log("prompt composition (nai.ts)")
 {
   const dest2 = join(out, "nai.mjs")

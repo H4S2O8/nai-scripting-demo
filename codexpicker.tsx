@@ -1,6 +1,10 @@
 /**
- * Draw a random entry from a category of 所长色色 (suozhang_r18) on
- * novelai.quicktagcloud.com, into the request's codex slot.
+ * Draw a random entry from a codex on novelai.quicktagcloud.com.
+ *
+ * Two uses, one sheet. The scene draw (所长色色) goes into the request's own
+ * codex slot, whole, and is merged at build time. The artist draw (v5 画师
+ * 词典) is one style string, so it lands in the user's 艺术风格 block as a
+ * tagged chunk — the block they already have for exactly this.
  *
  * The layout mirrors the site's own: a horizontal rail of chips, one per
  * category, single-select. Picking a category that has children opens a
@@ -29,7 +33,6 @@ import {
   CodexEntry,
   CodexMeta,
   CodexNode,
-  DEFAULT_CODEX,
   childrenAt,
   clearCodexCache,
   entriesUnder,
@@ -46,8 +49,30 @@ import { CodexDraw } from "./nai"
 import { Card, Chip } from "./ui"
 import { ACCENT, PAGE_BG } from "./theme"
 
-const PATH_KEY = "nai.codex.lastpath.v1"
-const BATCH_KEY = "nai.codex.lastbatch.v1"
+const PATH_KEY = "nai.codex.lastpath.v1."
+const BATCH_KEY = "nai.codex.lastbatch.v1."
+
+/** What a picker instance draws from, and what it is called. */
+export type CodexSpec = {
+  codexId: string
+  title: string
+  /** Start on the newest batch rather than on all of them. */
+  preferLatestBatch: boolean
+}
+
+export const SCENE_SPEC: CodexSpec = {
+  codexId: "suozhang_r18",
+  title: "所长色色 · 随机",
+  preferLatestBatch: false,
+}
+
+export const ARTIST_SPEC: CodexSpec = {
+  codexId: "artist_nai5_personal",
+  title: "随机画师",
+  // Every entry here is batched, and the newest batch is the one that was
+  // just tested against the current model.
+  preferLatestBatch: true,
+}
 
 export type CodexPick = {
   entry: CodexEntry
@@ -55,8 +80,8 @@ export type CodexPick = {
   path: string[]
 }
 
-function loadLastPath(): string[] {
-  const raw = Storage.get<string[]>(PATH_KEY)
+function loadLastPath(codexId: string): string[] {
+  const raw = Storage.get<string[]>(PATH_KEY + codexId)
   return Array.isArray(raw) ? raw.filter((seg) => typeof seg === "string") : []
 }
 
@@ -93,12 +118,14 @@ function Rail({
 
 export function CodexPickerSheet({
   sessionKey,
+  spec,
   current,
   onPick,
   onClose,
 }: {
   /** Changes on every open: sheet content is not rebuilt between presentations. */
   sessionKey: string
+  spec: CodexSpec
   /** What the slot holds now, so the sheet can show it and re-roll from it. */
   current: CodexDraw | null
   /** Every draw replaces the slot; there is only ever one. */
@@ -126,17 +153,20 @@ export function CodexPickerSheet({
       setMeta(target)
       setDrawn(loadDrawn(loaded.codex.id))
       // Land where the user left off, if that category still exists.
-      const remembered = loadLastPath()
+      const remembered = loadLastPath(target.id)
       const valid = remembered.every((_, i) =>
         childrenAt(loaded.codex.tree, remembered.slice(0, i)).some((n) => n.name === remembered[i]),
       )
       setPath(valid ? remembered : [])
-      const rememberedBatch = Storage.get<string>(BATCH_KEY)
+      const rememberedBatch = Storage.get<string>(BATCH_KEY + target.id)
+      const latest = target.updateFilters.find((f) => f.latest)?.id ?? ""
       setBatch(
         typeof rememberedBatch === "string" &&
           target.updateFilters.some((f) => f.id === rememberedBatch)
           ? rememberedBatch
-          : "",
+          : spec.preferLatestBatch
+            ? latest
+            : "",
       )
       say(
         `${loaded.codex.title} · ${loaded.codex.entries.length} 条` +
@@ -156,9 +186,9 @@ export function CodexPickerSheet({
     say("正在读取词典列表…")
     loadCodexList()
       .then((list) => {
-        const found = list.find((c) => c.id === DEFAULT_CODEX)
+        const found = list.find((c) => c.id === spec.codexId)
         if (!found) {
-          say("网站上找不到 " + DEFAULT_CODEX)
+          say("网站上找不到 " + spec.codexId)
           setBusy(false)
           return
         }
@@ -174,7 +204,7 @@ export function CodexPickerSheet({
     // Selecting at a level discards anything chosen below it.
     const next = name ? path.slice(0, depth).concat(name) : path.slice(0, depth)
     setPath(next)
-    Storage.set(PATH_KEY, next)
+    if (codex) Storage.set(PATH_KEY + codex.id, next)
   }
 
   // One rail per level: the root, then the children of each chosen node.
@@ -231,7 +261,7 @@ export function CodexPickerSheet({
   return (
     <NavigationStack>
       <VStack
-        navigationTitle="所长色色 · 随机"
+        navigationTitle={spec.title}
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
         spacing={10}
@@ -263,7 +293,7 @@ export function CodexPickerSheet({
                 disabled={busy}
                 onTap={() => {
                   setBatch("")
-                  Storage.set(BATCH_KEY, "")
+                  if (codex) Storage.set(BATCH_KEY + codex.id, "")
                 }}
               />
               {meta.updateFilters.map((filter) => (
@@ -274,7 +304,7 @@ export function CodexPickerSheet({
                   disabled={busy || batchCount(filter.id) === 0}
                   onTap={() => {
                     setBatch(filter.id)
-                    Storage.set(BATCH_KEY, filter.id)
+                    if (codex) Storage.set(BATCH_KEY + codex.id, filter.id)
                   }}
                 />
               ))}

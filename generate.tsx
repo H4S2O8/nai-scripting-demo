@@ -53,6 +53,7 @@ function PromptRow({
   placeholder,
   onTap,
   emphasis,
+  action,
 }: {
   icon: string
   label: string
@@ -60,6 +61,8 @@ function PromptRow({
   placeholder: string
   onTap: () => void
   emphasis?: boolean
+  /** An extra control at the trailing edge, e.g. the artist dice. */
+  action?: { icon: string; onTap: () => void }
 }) {
   const filled = text.trim().length > 0
   return (
@@ -91,6 +94,13 @@ function PromptRow({
         {filled ? summarizePrompt(text) : placeholder}
       </Text>
       <Spacer />
+      {action ? (
+        // A Button inside a tappable row takes the tap for itself, the same
+        // way the codex row's clear button does.
+        <Button buttonStyle="plain" action={action.onTap}>
+          <Image systemName={action.icon} font={13} foregroundStyle={ACCENT} />
+        </Button>
+      ) : null}
       <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
     </HStack>
   )
@@ -341,8 +351,9 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
             icon="paintpalette"
             label="艺术风格"
             text={params.stylePrompt}
-            placeholder="画风、画师、媒介"
+            placeholder="画风、画师、媒介 · 🎲 随机画师"
             onTap={() => wb.editPrompt({ kind: "style" })}
+            action={{ icon: "dice", onTap: () => wb.openCodex("artist") }}
           />
           <PromptRow
             icon="person"
@@ -363,7 +374,11 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
               holds one whole entry — base plus per-character prompts — and is
               merged into the request at build time, so the three blocks and
               the character list above are never edited by a draw. */}
-          <CodexRow draw={params.codex} onTap={wb.openCodex} onClear={wb.clearCodex} />
+          <CodexRow
+            draw={params.codex}
+            onTap={() => wb.openCodex("scene")}
+            onClear={() => wb.clearCodex("scene")}
+          />
         </VStack>
 
         {/* One row for the things that change between two generations. */}

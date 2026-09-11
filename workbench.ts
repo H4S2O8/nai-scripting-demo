@@ -48,6 +48,9 @@ export type EditTarget =
   | { kind: "negative" }
   | { kind: "char"; index: number; field: "prompt" | "negative" }
 
+/** Which draw slot a picker is filling. */
+export type CodexSlot = "scene" | "artist"
+
 export type Workbench = {
   params: GenerateParams
   patch: (next: Partial<GenerateParams>) => void
@@ -81,9 +84,9 @@ export type Workbench = {
   openViewer: () => void
   openCharacters: () => void
   openAccount: () => void
-  /** The codex draw: open the picker, or drop the current draw. */
-  openCodex: () => void
-  clearCodex: () => void
+  /** The codex draws: open a picker for one slot, or drop what it holds. */
+  openCodex: (slot: CodexSlot) => void
+  clearCodex: (slot: CodexSlot) => void
   reuse: (image: GeneratedImage) => void
   saveImage: (image: GeneratedImage) => void
   shareImage: (image: GeneratedImage) => void

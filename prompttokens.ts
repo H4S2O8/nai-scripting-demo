@@ -279,6 +279,55 @@ export function toggleChunk(text: string, chunk: Chunk): string {
 }
 
 /** Append free-form tags, skipping ones already present. */
+/**
+ * Chunks a draw owns are told apart by a label prefix.
+ *
+ * The artist draw lands in the user's own 艺术风格 block as a chunk, so
+ * "换一个" has to find the previous draw among whatever else is there. A
+ * prefix on the label does that without a side table, and doubles as the
+ * visible mark that the chunk came from a draw.
+ */
+export function findTaggedChunk(
+  text: string,
+  prefix: string,
+): { label: string; expansion: string } | null {
+  for (const token of parsePrompt(text)) {
+    if (token.kind === "chunk" && token.label.startsWith(prefix)) {
+      return { label: token.label, expansion: token.expansion }
+    }
+  }
+  return null
+}
+
+/**
+ * Put a tagged chunk into a block: replacing the one already there, or
+ * appending when there is none. The chunk's expansion is inside the marker,
+ * so it needs no library entry.
+ */
+export function upsertTaggedChunk(
+  text: string,
+  prefix: string,
+  label: string,
+  expansion: string,
+): string {
+  if (!expansion.trim()) return text
+  const tokens = parsePrompt(text)
+  const index = tokens.findIndex((token) => token.kind === "chunk" && token.label.startsWith(prefix))
+  const chunk = { kind: "chunk" as const, label: prefix + label, expansion }
+  if (index === -1) return serializePrompt(tidy(tokens).concat([chunk]))
+  const out = tokens.slice()
+  out[index] = chunk
+  return serializePrompt(out)
+}
+
+/** Remove the tagged chunk, leaving everything else as it was. */
+export function removeTaggedChunk(text: string, prefix: string): string {
+  const tokens = parsePrompt(text)
+  const index = tokens.findIndex((token) => token.kind === "chunk" && token.label.startsWith(prefix))
+  if (index === -1) return text
+  return serializePrompt(tidy(removeToken(tokens, index)))
+}
+
 export function addTags(text: string, input: string): string {
   const tokens = parsePrompt(text)
   const present: Record<string, boolean> = {}

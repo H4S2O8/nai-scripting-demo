@@ -30,6 +30,7 @@ import {
 import {
   Account,
   CharacterPrompt,
+  CodexDraw,
   GeneratedImage,
   GenerateParams,
   estimateAnlas,
@@ -45,15 +46,20 @@ import {
 } from "./nai"
 import { Chunk, loadCache } from "./chunks"
 import { activeAccount } from "./accounts"
-import { toggleChunk } from "./prompttokens"
+import {
+  findTaggedChunk,
+  removeTaggedChunk,
+  toggleChunk,
+  upsertTaggedChunk,
+} from "./prompttokens"
 import { clearHistory, loadHistory, loadParams, pushHistory, removeHistory, saveParams } from "./store"
-import { EditTarget, Workbench } from "./workbench"
+import { CodexSlot, EditTarget, Workbench } from "./workbench"
 import { AccountSheet } from "./settings"
 import { ChunksPage } from "./chunkspage"
 import { GenerateTab } from "./generate"
 import { ParamsTab } from "./params"
 import { GalleryTab } from "./gallery"
-import { CodexPickerSheet } from "./codexpicker"
+import { ARTIST_SPEC, CodexPickerSheet, SCENE_SPEC } from "./codexpicker"
 import { CharactersTab } from "./characters"
 import { PromptEditor } from "./prompteditor"
 import { StatPill } from "./ui"
@@ -104,6 +110,23 @@ function targetSpec(target: EditTarget, params: GenerateParams) {
   }
 }
 
+/** Marks the artist draw's chunk inside the 艺术风格 block. */
+export const ARTIST_PREFIX = "🎨 "
+
+/** The artist draw as the picker's `current`, read back out of the block. */
+function artistDraw(stylePrompt: string): CodexDraw | null {
+  const found = findTaggedChunk(stylePrompt, ARTIST_PREFIX)
+  if (!found) return null
+  return {
+    id: "",
+    title: found.label.slice(ARTIST_PREFIX.length),
+    path: [],
+    base: found.expansion,
+    characters: [],
+    identity: false,
+  }
+}
+
 function MainView() {
   const selection = useObservable<number>(TAB_GENERATE)
 
@@ -120,6 +143,7 @@ function MainView() {
 
   const [accountOpen, setAccountOpen] = useState(false)
   const [codexOpen, setCodexOpen] = useState(false)
+  const [codexSlot, setCodexSlot] = useState<CodexSlot>("scene")
   // Counter, not boolean: the picker's sessionKey. Sheet content is not
   // rebuilt between presentations.
   const [codexSession, setCodexSession] = useState(0)
@@ -334,11 +358,17 @@ function MainView() {
     openViewer: () => setViewerOpen(true),
     openCharacters: () => selection.setValue(TAB_CHARACTERS),
     openAccount: () => setAccountOpen(true),
-    openCodex: () => {
+    openCodex: (slot) => {
+      setCodexSlot(slot)
       setCodexSession((n) => n + 1)
       setCodexOpen(true)
     },
-    clearCodex: () => {
+    clearCodex: (slot) => {
+      if (slot === "artist") {
+        patch({ stylePrompt: removeTaggedChunk(params.stylePrompt, ARTIST_PREFIX) })
+        toast("已移除随机画师")
+        return
+      }
       patch({ codex: null })
       toast("已清除词典抽取")
     },
@@ -409,9 +439,23 @@ function MainView() {
           onChanged: setCodexOpen,
           content: (
             <CodexPickerSheet
-              sessionKey={String(codexSession)}
-              current={params.codex}
+              sessionKey={codexSlot + "#" + codexSession}
+              spec={codexSlot === "artist" ? ARTIST_SPEC : SCENE_SPEC}
+              current={codexSlot === "artist" ? artistDraw(params.stylePrompt) : params.codex}
               onPick={(pick) => {
+                if (codexSlot === "artist") {
+                  // One style string: it belongs in the block the user
+                  // already keeps for style, as a chunk they can see and drop.
+                  patch({
+                    stylePrompt: upsertTaggedChunk(
+                      params.stylePrompt,
+                      ARTIST_PREFIX,
+                      pick.entry.title,
+                      pick.entry.tags,
+                    ),
+                  })
+                  return
+                }
                 patch({
                   codex: {
                     id: pick.entry.id,
