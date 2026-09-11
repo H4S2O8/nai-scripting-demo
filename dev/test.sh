@@ -30,6 +30,9 @@ echo
 echo "== codex (quicktagcloud) =="
 node dev/test_codex.mjs
 echo
+echo "== draws into blocks =="
+node dev/test_draws.mjs
+echo
 echo "== raw DEFLATE vs node zlib =="
 node dev/test_inflate.mjs
 echo

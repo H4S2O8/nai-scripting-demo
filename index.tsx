@@ -30,7 +30,6 @@ import {
 import {
   Account,
   CharacterPrompt,
-  CodexDraw,
   GeneratedImage,
   GenerateParams,
   estimateAnlas,
@@ -46,12 +45,8 @@ import {
 } from "./nai"
 import { Chunk, loadCache } from "./chunks"
 import { activeAccount } from "./accounts"
-import {
-  findTaggedChunk,
-  removeTaggedChunk,
-  toggleChunk,
-  upsertTaggedChunk,
-} from "./prompttokens"
+import { toggleChunk } from "./prompttokens"
+import { clearArtist, clearScene, currentArtist, currentScene, placeArtist, placeScene } from "./draws"
 import { clearHistory, loadHistory, loadParams, pushHistory, removeHistory, saveParams } from "./store"
 import { CodexSlot, EditTarget, Workbench } from "./workbench"
 import { AccountSheet } from "./settings"
@@ -107,23 +102,6 @@ function targetSpec(target: EditTarget, params: GenerateParams) {
         value: character ? (isPrompt ? character.prompt : character.negative) : "",
       }
     }
-  }
-}
-
-/** Marks the artist draw's chunk inside the 艺术风格 block. */
-export const ARTIST_PREFIX = "🎨 "
-
-/** The artist draw as the picker's `current`, read back out of the block. */
-function artistDraw(stylePrompt: string): CodexDraw | null {
-  const found = findTaggedChunk(stylePrompt, ARTIST_PREFIX)
-  if (!found) return null
-  return {
-    id: "",
-    title: found.label.slice(ARTIST_PREFIX.length),
-    path: [],
-    base: found.expansion,
-    characters: [],
-    identity: false,
   }
 }
 
@@ -365,12 +343,12 @@ function MainView() {
     },
     clearCodex: (slot) => {
       if (slot === "artist") {
-        patch({ stylePrompt: removeTaggedChunk(params.stylePrompt, ARTIST_PREFIX) })
+        patch(clearArtist(params))
         toast("已移除随机画师")
         return
       }
-      patch({ codex: null })
-      toast("已清除词典抽取")
+      patch(clearScene(params))
+      toast("已移除词典抽取")
     },
     reuse: (image) => {
       if (image.params) {
@@ -441,32 +419,21 @@ function MainView() {
             <CodexPickerSheet
               sessionKey={codexSlot + "#" + codexSession}
               spec={codexSlot === "artist" ? ARTIST_SPEC : SCENE_SPEC}
-              current={codexSlot === "artist" ? artistDraw(params.stylePrompt) : params.codex}
+              current={codexSlot === "artist" ? currentArtist(params) : currentScene(params)}
               onPick={(pick) => {
+                // Both land in the blocks the user already has, as chunks
+                // they can see, expand, edit and delete.
                 if (codexSlot === "artist") {
-                  // One style string: it belongs in the block the user
-                  // already keeps for style, as a chunk they can see and drop.
-                  patch({
-                    stylePrompt: upsertTaggedChunk(
-                      params.stylePrompt,
-                      ARTIST_PREFIX,
-                      pick.entry.title,
-                      pick.entry.tags,
-                    ),
-                  })
+                  patch(placeArtist(params, pick.entry.title, pick.entry.tags))
                   return
                 }
-                patch({
-                  codex: {
-                    id: pick.entry.id,
-                    title: pick.entry.title,
-                    path: pick.path,
-                    base: pick.entry.tags,
-                    characters: pick.entry.characters,
-                    identity: pick.entry.identity,
-                  },
-                })
+                const limit = maxCharacterPrompts(params.model)
+                if (pick.entry.characters.length > 0 && limit === 0) {
+                  toast("当前模型没有人物槽位，这条的角色部分没有填入")
+                }
+                patch(placeScene(params, pick.entry.title, pick.entry.tags, pick.entry.characters, limit))
               }}
+              onClear={() => wb.clearCodex(codexSlot)}
               onClose={() => setCodexOpen(false)}
             />
           ),

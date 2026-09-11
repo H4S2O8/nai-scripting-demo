@@ -1,19 +1,17 @@
 /**
  * Draw a random entry from a codex on novelai.quicktagcloud.com.
  *
- * Two uses, one sheet. The scene draw (所长色色) goes into the request's own
- * codex slot, whole, and is merged at build time. The artist draw (v5 画师
- * 词典) is one style string, so it lands in the user's 艺术风格 block as a
- * tagged chunk — the block they already have for exactly this.
+ * Two uses, one sheet. The artist draw (v5 画师词典) lands in 艺术风格; the
+ * scene draw (所长色色) lands in 特定, with each of its character prompts in
+ * the character of the same slot. All of it as tagged chunks the user can
+ * see, expand, edit and delete — see draws.ts.
  *
  * The layout mirrors the site's own: a horizontal rail of chips, one per
  * category, single-select. Picking a category that has children opens a
  * second rail beneath it, and so on down. "全部" on a rail means the whole
  * level. One button draws from everything under the current selection.
  *
- * The slot holds one whole entry — base prompt and per-character prompts —
- * and nai.ts merges it in at build time. Nothing the user typed is edited,
- * and the draw is never written to the chunk library or the account.
+ * A draw is never written to the chunk library or the account.
  */
 import {
   Button,
@@ -47,7 +45,7 @@ import {
   resetDrawn,
   undrawn,
 } from "./codex"
-import { CodexDraw } from "./nai"
+import { DrawInPlace } from "./draws"
 import { Card, Chip } from "./ui"
 import { ACCENT, PAGE_BG } from "./theme"
 
@@ -128,10 +126,12 @@ export function CodexPickerSheet({
   /** Changes on every open: sheet content is not rebuilt between presentations. */
   sessionKey: string
   spec: CodexSpec
-  /** What the slot holds now, so the sheet can show it and re-roll from it. */
-  current: CodexDraw | null
-  /** Every draw replaces the slot; there is only ever one. */
+  /** What the blocks hold now, so the sheet can show it and re-roll from it. */
+  current: DrawInPlace | null
+  /** Every draw replaces the previous one; there is only ever one. */
   onPick: (pick: CodexPick) => void
+  /** Remove the current draw's chunks from wherever they landed. */
+  onClear: () => void
   onClose: () => void
 }) {
   const [codex, setCodex] = useState<Codex | null>(null)
@@ -287,6 +287,8 @@ export function CodexPickerSheet({
   const shown = last
     ? { title: last.entry.title, path: last.entry.path, base: last.entry.tags, characters: last.entry.characters, identity: last.entry.identity }
     : current
+      ? { ...current, path: [] as string[], identity: false }
+      : null
 
   const reset = () => {
     if (!codex) return
@@ -366,6 +368,18 @@ export function CodexPickerSheet({
               disabled={busy || fresh.length === 0}
               onTap={draw}
             />
+            {shown ? (
+              <Chip
+                label="移除"
+                selected={false}
+                disabled={busy}
+                onTap={() => {
+                  onClear()
+                  setLast(null)
+                  say("已移除，块里的标签已清掉")
+                }}
+              />
+            ) : null}
             <Spacer />
             {pool.length > fresh.length ? (
               <Chip label="重置已抽" selected={false} disabled={busy} onTap={reset} />
@@ -376,19 +390,23 @@ export function CodexPickerSheet({
               <Text font={12} fontWeight="semibold" foregroundStyle={ACCENT}>
                 {shown.title}
               </Text>
-              <Text font={11} foregroundStyle="tertiaryLabel">
-                {shown.path.join(" › ")}
-              </Text>
+              {shown.path.length ? (
+                <Text font={11} foregroundStyle="tertiaryLabel">
+                  {shown.path.join(" › ")}
+                </Text>
+              ) : null}
               {shown.base.trim() ? (
                 <Text font={11} foregroundStyle="secondaryLabel" lineLimit={3}>
                   {shown.base}
                 </Text>
               ) : null}
-              {shown.characters.map((prompt, index) => (
-                <Text key={String(index)} font={11} foregroundStyle="secondaryLabel" lineLimit={2}>
-                  {`角色 ${index + 1} → 人物槽位 ${index + 1}：${prompt}`}
-                </Text>
-              ))}
+              {shown.characters.map((prompt, index) =>
+                prompt ? (
+                  <Text key={String(index)} font={11} foregroundStyle="secondaryLabel" lineLimit={2}>
+                    {`角色 ${index + 1} → 人物槽位 ${index + 1}：${prompt}`}
+                  </Text>
+                ) : null,
+              )}
               {shown.identity ? (
                 <Text font={11} foregroundStyle={"systemOrange" as any}>
                   ⚠ 这条的角色 prompt 含发色/瞳色等外貌词，可能盖过你写的角色
