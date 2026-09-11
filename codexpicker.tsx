@@ -1,6 +1,12 @@
 /**
- * Draw a random prompt from a codex category on novelai.quicktagcloud.com,
- * and hand it to the prompt editor as a temporary chunk.
+ * Draw a random prompt from a category of 所长色色 (suozhang_r18) on
+ * novelai.quicktagcloud.com, and hand it to the prompt editor as a temporary
+ * chunk.
+ *
+ * The layout mirrors the site's own: a horizontal rail of chips, one per
+ * category, single-select. Picking a category that has children opens a
+ * second rail beneath it, and so on down. "全部" on a rail means the whole
+ * level. One button draws from everything under the current selection.
  *
  * Temporary means: the chunk carries its own expansion inside the prompt's
  * marker, so it displays and expands like any library chunk without ever
@@ -13,7 +19,6 @@ import {
   ScrollView,
   Spacer,
   Text,
-  TextField,
   VStack,
   useEffect,
   useState,
@@ -27,22 +32,56 @@ import {
   DEFAULT_CODEX,
   childrenAt,
   clearCodexCache,
-  encodePathCode,
   entriesUnder,
   loadCodex,
   loadCodexList,
-  nodeAt,
-  parseSiteLink,
-  pathFromCode,
   randomEntry,
 } from "./codex"
-import { Card, Chip, Well } from "./ui"
+import { Card, Chip } from "./ui"
 import { ACCENT, PAGE_BG } from "./theme"
+
+const PATH_KEY = "nai.codex.lastpath.v1"
 
 export type CodexPick = {
   entry: CodexEntry
   codexId: string
   path: string[]
+}
+
+function loadLastPath(): string[] {
+  const raw = Storage.get<string[]>(PATH_KEY)
+  return Array.isArray(raw) ? raw.filter((seg) => typeof seg === "string") : []
+}
+
+/** One rail: the children of `at`, with "全部" meaning `at` itself. */
+function Rail({
+  nodes,
+  selected,
+  onSelect,
+  disabled,
+}: {
+  nodes: CodexNode[]
+  /** The chosen child's name, or "" for the whole level. */
+  selected: string
+  onSelect: (name: string) => void
+  disabled: boolean
+}) {
+  return (
+    <ScrollView axes="horizontal" scrollIndicator="hidden">
+      <HStack spacing={8}>
+        <Chip label="全部" selected={selected === ""} disabled={disabled} onTap={() => onSelect("")} />
+        {nodes.map((node) => (
+          <Chip
+            key={node.name}
+            label={`${node.name} ${node.count}`}
+            selected={selected === node.name}
+            disabled={disabled}
+            onTap={() => onSelect(node.name)}
+          />
+        ))}
+      </HStack>
+    </ScrollView>
+  )
 }
 
 export function CodexPickerSheet({
@@ -59,32 +98,31 @@ export function CodexPickerSheet({
   onPick: (pick: CodexPick, replacing: CodexPick | null) => void
   onClose: () => void
 }) {
-  const [codexes, setCodexes] = useState<CodexMeta[]>([])
-  const [codexId, setCodexId] = useState(DEFAULT_CODEX)
   const [codex, setCodex] = useState<Codex | null>(null)
+  const [meta, setMeta] = useState<CodexMeta | null>(null)
   const [path, setPath] = useState<string[]>([])
   const [status, setStatus] = useState("")
   const [busy, setBusy] = useState(false)
-  const [link, setLink] = useState("")
   const [last, setLast] = useState<CodexPick | null>(null)
 
   const say = (line: string) => setStatus(line)
 
-  const open = async (meta: CodexMeta, jumpTo?: string) => {
+  const open = async (target: CodexMeta) => {
     setBusy(true)
-    setCodex(null)
-    setPath([])
-    say("正在读取 " + meta.name + "…")
+    say("正在读取…")
     try {
-      const loaded = await loadCodex(meta, say)
+      const loaded = await loadCodex(target, say)
       setCodex(loaded.codex)
-      setCodexId(meta.id)
-      const target = jumpTo ? pathFromCode(loaded.codex.tree, jumpTo) : []
-      setPath(target)
+      setMeta(target)
+      // Land where the user left off, if that category still exists.
+      const remembered = loadLastPath()
+      const valid = remembered.every((_, i) =>
+        childrenAt(loaded.codex.tree, remembered.slice(0, i)).some((n) => n.name === remembered[i]),
+      )
+      setPath(valid ? remembered : [])
       say(
         `${loaded.codex.title} · ${loaded.codex.entries.length} 条` +
-          (loaded.fromCache ? " · 本地缓存" : " · 已更新") +
-          (jumpTo && target.length === 0 ? " · 链接里的分类没找到，已回到根目录" : ""),
+          (loaded.fromCache ? " · 本地缓存" : " · 已更新到最新"),
       )
     } catch (error) {
       say("❌ " + (error instanceof Error ? error.message : String(error)))
@@ -93,24 +131,20 @@ export function CodexPickerSheet({
     }
   }
 
-  // The list and the default codex, once per open.
   useEffect(() => {
     setLast(null)
-    setLink("")
-    setPath([])
     setCodex(null)
     setBusy(true)
     say("正在读取词典列表…")
     loadCodexList()
       .then((list) => {
-        setCodexes(list)
-        const meta = list.find((c) => c.id === DEFAULT_CODEX) ?? list[0]
-        if (!meta) {
-          say("网站上没有任何词典")
+        const found = list.find((c) => c.id === DEFAULT_CODEX)
+        if (!found) {
+          say("网站上找不到 " + DEFAULT_CODEX)
           setBusy(false)
           return
         }
-        return open(meta)
+        return open(found)
       })
       .catch((error) => {
         say("❌ " + (error instanceof Error ? error.message : String(error)))
@@ -118,51 +152,43 @@ export function CodexPickerSheet({
       })
   }, [sessionKey])
 
-  const here = codex ? nodeAt(codex.tree, path) : null
-  const children: CodexNode[] = codex ? childrenAt(codex.tree, path) : []
-  const pool = codex ? entriesUnder(codex.entries, path) : []
+  const choose = (depth: number, name: string) => {
+    // Selecting at a level discards anything chosen below it.
+    const next = name ? path.slice(0, depth).concat(name) : path.slice(0, depth)
+    setPath(next)
+    Storage.set(PATH_KEY, next)
+  }
 
-  const draw = (at: string[]) => {
+  // One rail per level: the root, then the children of each chosen node.
+  const rails: { depth: number; nodes: CodexNode[]; selected: string }[] = []
+  if (codex) {
+    for (let depth = 0; depth <= path.length; depth++) {
+      const nodes = childrenAt(codex.tree, path.slice(0, depth))
+      if (nodes.length === 0) break
+      rails.push({ depth, nodes, selected: path[depth] ?? "" })
+    }
+  }
+
+  const pool = codex ? entriesUnder(codex.entries, path) : []
+  const scope = path.length ? path.join(" › ") : codex?.title ?? ""
+
+  const draw = (stack: boolean) => {
     if (!codex) return
-    const entry = randomEntry(entriesUnder(codex.entries, at))
+    const entry = randomEntry(pool)
     if (!entry) {
       say("这个分类下没有可用的 prompt")
       return
     }
-    const pick: CodexPick = { entry, codexId: codex.id, path: at }
-    onPick(pick, last)
+    const pick: CodexPick = { entry, codexId: codex.id, path }
+    onPick(pick, stack ? null : last)
     setLast(pick)
-    say(`已填入「${entry.title}」`)
-  }
-
-  const jump = () => {
-    const parsed = parseSiteLink(link)
-    if (!parsed) {
-      say("看不懂这个链接。要 ?c=…&p=… 的形式，或者只贴 p= 后面那段。")
-      return
-    }
-    const meta =
-      (parsed.codex ? codexes.find((c) => c.id === parsed.codex) : null) ??
-      codexes.find((c) => c.id === codexId) ??
-      null
-    if (!meta) {
-      say("链接里的词典 " + parsed.codex + " 不在列表里")
-      return
-    }
-    if (meta.id === codexId && codex) {
-      // Same codex: no reload, just move.
-      const target = pathFromCode(codex.tree, parsed.code)
-      setPath(target)
-      say(target.length ? "已跳到 " + target.join(" / ") : "链接里的分类没找到")
-      return
-    }
-    void open(meta, parsed.code)
+    say(`${stack ? "再填入" : "已填入"}「${entry.title}」`)
   }
 
   return (
     <NavigationStack>
       <VStack
-        navigationTitle="词典随机"
+        navigationTitle="所长色色 · 随机"
         navigationBarTitleDisplayMode="inline"
         background={PAGE_BG}
         spacing={10}
@@ -172,63 +198,22 @@ export function CodexPickerSheet({
           topBarTrailing: [<Button title="完成" action={onClose} />],
         }}
       >
-        {/* Which codex */}
-        <ScrollView axes="horizontal" scrollIndicator="hidden">
-          <HStack spacing={8}>
-            {codexes.map((meta) => (
-              <Chip
-                key={meta.id}
-                label={meta.name + (meta.nsfw ? " ·18" : "")}
-                selected={meta.id === codexId}
-                disabled={busy}
-                onTap={() => {
-                  if (meta.id !== codexId) void open(meta)
-                }}
-              />
-            ))}
-          </HStack>
-        </ScrollView>
-
-        {/* Paste a link from the site */}
-        <Well padding={8}>
-          <HStack spacing={8}>
-            <TextField
-              title="链接"
-              value={link}
-              onChanged={setLink}
-              prompt="粘贴网站链接或 p= 短码后跳转"
-              labelsHidden
-              autocorrectionDisabled
-            />
-            <Chip label="跳转" selected={false} disabled={busy || !link.trim()} onTap={jump} />
-          </HStack>
-        </Well>
-
-        {/* Where we are */}
-        <HStack spacing={6} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-          <Chip
-            label={codex ? codex.title : "…"}
-            selected={path.length === 0}
-            disabled={!codex}
-            onTap={() => setPath([])}
+        {rails.map((rail) => (
+          <Rail
+            key={String(rail.depth)}
+            nodes={rail.nodes}
+            selected={rail.selected}
+            disabled={busy}
+            onSelect={(name) => choose(rail.depth, name)}
           />
-          {path.map((name, index) => (
-            <Chip
-              key={String(index) + name}
-              label={name}
-              selected={index === path.length - 1}
-              onTap={() => setPath(path.slice(0, index + 1))}
-            />
-          ))}
-        </HStack>
+        ))}
 
-        {/* The draw — the whole point of the sheet */}
         <Card
-          title={path.length ? path[path.length - 1] : "整个词典"}
+          title={scope || "…"}
           systemImage="dice"
           trailing={
             <Text font={11} foregroundStyle="tertiaryLabel">
-              {pool.length} 条可抽 · p={encodePathCode(path) || "根"}
+              {pool.length} 条
             </Text>
           }
         >
@@ -237,23 +222,14 @@ export function CodexPickerSheet({
               label={last ? "换一个" : "随机一个"}
               selected={true}
               disabled={busy || pool.length === 0}
-              onTap={() => draw(path)}
+              onTap={() => draw(false)}
             />
             {last ? (
               <Chip
                 label="再加一个"
                 selected={false}
                 disabled={busy || pool.length === 0}
-                onTap={() => {
-                  // Forget the previous pick so the next draw stacks.
-                  setLast(null)
-                  const entry = randomEntry(pool)
-                  if (!entry || !codex) return
-                  const pick: CodexPick = { entry, codexId: codex.id, path }
-                  onPick(pick, null)
-                  setLast(pick)
-                  say(`已再填入「${entry.title}」`)
-                }}
+                onTap={() => draw(true)}
               />
             ) : null}
             <Spacer />
@@ -263,7 +239,10 @@ export function CodexPickerSheet({
               <Text font={12} fontWeight="semibold" foregroundStyle={ACCENT}>
                 {last.entry.title}
               </Text>
-              <Text font={11} foregroundStyle="secondaryLabel" lineLimit={3}>
+              <Text font={11} foregroundStyle="tertiaryLabel">
+                {last.entry.path.join(" › ")}
+              </Text>
+              <Text font={11} foregroundStyle="secondaryLabel" lineLimit={4}>
                 {last.entry.tags}
               </Text>
             </VStack>
@@ -274,61 +253,21 @@ export function CodexPickerSheet({
           {status}
         </Text>
 
-        {/* Subcategories */}
-        <ScrollView>
-          <VStack spacing={6} frame={{ maxWidth: "infinity" }}>
-            {children.map((node) => (
-              <HStack key={node.name} spacing={8} frame={{ maxWidth: "infinity" }}>
-                <Button
-                  buttonStyle="plain"
-                  action={() => setPath(path.concat(node.name))}
-                  disabled={node.children.length === 0}
-                >
-                  <HStack spacing={6}>
-                    <Text font={13}>{node.name}</Text>
-                    <Text font={11} foregroundStyle="tertiaryLabel">
-                      {node.count}
-                    </Text>
-                    {node.children.length ? (
-                      <Text font={11} foregroundStyle="tertiaryLabel">
-                        ›
-                      </Text>
-                    ) : null}
-                  </HStack>
-                </Button>
-                <Spacer />
-                <Chip
-                  label="随机"
-                  selected={false}
-                  disabled={busy}
-                  onTap={() => draw(path.concat(node.name))}
-                />
-              </HStack>
-            ))}
-            {codex && children.length === 0 ? (
-              <Text font={11} foregroundStyle="tertiaryLabel">
-                已经是最底层分类
-              </Text>
-            ) : null}
-          </VStack>
-        </ScrollView>
+        <Spacer />
 
-        {codex && here === null && path.length > 0 ? null : (
-          <HStack>
-            <Spacer />
-            <Chip
-              label="清缓存重新下载"
-              selected={false}
-              disabled={busy || !codex}
-              onTap={() => {
-                if (!codex) return
-                clearCodexCache(codex.id)
-                const meta = codexes.find((c) => c.id === codex.id)
-                if (meta) void open(meta)
-              }}
-            />
-          </HStack>
-        )}
+        <HStack>
+          <Spacer />
+          <Chip
+            label="清缓存重新下载"
+            selected={false}
+            disabled={busy || !codex || !meta}
+            onTap={() => {
+              if (!codex || !meta) return
+              clearCodexCache(codex.id)
+              void open(meta)
+            }}
+          />
+        </HStack>
       </VStack>
     </NavigationStack>
   )

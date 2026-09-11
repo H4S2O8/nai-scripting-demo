@@ -2,9 +2,6 @@
  * The codex module, against a real snapshot of the site's data when one is
  * available and against fixtures otherwise.
  *
- * The one thing that must not drift is the ?p= short code: it is a port of the
- * site's own hash, and a link copied from the site has to resolve here.
- *
  *   node dev/test_codex.mjs
  */
 import { execFileSync } from "node:child_process"
@@ -45,14 +42,6 @@ function check(name, ok, detail = "") {
   else { failures++; console.log("  FAIL " + name + (detail ? " -- " + detail : "")) }
 }
 
-console.log("short code")
-// Known pairs, taken from links the site itself produced.
-check("a top-level category encodes to the site's code", C.encodePathCode(["基础涩涩"]) === "1vpbhbm", C.encodePathCode(["基础涩涩"]))
-check("the root encodes to nothing", C.encodePathCode([]) === "")
-check("blank segments are ignored", C.encodePathCode(["", " 基础涩涩 ", ""]) === "1vpbhbm")
-check("a deeper path encodes differently", C.encodePathCode(["基础涩涩", "各种体位"]) !== "1vpbhbm")
-check("the code is base36", /^[0-9a-z]+$/.test(C.encodePathCode(["基础涩涩", "各种体位"])))
-
 const tree = [
   { name: "基础涩涩", count: 3, children: [
     { name: "各种体位", count: 2, children: [] },
@@ -60,25 +49,12 @@ const tree = [
   ]},
   { name: "杂项", count: 1, children: [] },
 ]
-check("a code resolves back to its path", JSON.stringify(C.pathFromCode(tree, "1vpbhbm")) === '["基础涩涩"]')
-check("a deep code resolves", JSON.stringify(C.pathFromCode(tree, C.encodePathCode(["基础涩涩", "其他"]))) === '["基础涩涩","其他"]')
-check("an unknown code resolves to the root", C.pathFromCode(tree, "zzzzzzz").length === 0)
-check("an empty code resolves to the root", C.pathFromCode(tree, "").length === 0)
-
-console.log("site links")
-check("a full URL parses", JSON.stringify(C.parseSiteLink("https://novelai.quicktagcloud.com/?c=suozhang_r18&p=1vpbhbm")) === '{"codex":"suozhang_r18","code":"1vpbhbm"}')
-check("just the query parses", JSON.stringify(C.parseSiteLink("?c=suozhang_r18&p=1vpbhbm")) === '{"codex":"suozhang_r18","code":"1vpbhbm"}')
-check("a codex without a page parses", JSON.stringify(C.parseSiteLink("?c=suozhang_r18")) === '{"codex":"suozhang_r18","code":""}')
-check("a bare code parses", JSON.stringify(C.parseSiteLink("1vpbhbm")) === '{"codex":"","code":"1vpbhbm"}')
-check("garbage is rejected", C.parseSiteLink("hello world") === null)
-check("empty is rejected", C.parseSiteLink("   ") === null)
 
 console.log("tree")
 check("children of the root", C.childrenAt(tree, []).length === 2)
 check("children of a category", C.childrenAt(tree, ["基础涩涩"]).length === 2)
 check("children of a leaf", C.childrenAt(tree, ["杂项"]).length === 0)
 check("children of nowhere", C.childrenAt(tree, ["不存在"]).length === 0)
-check("nodeAt finds a nested node", C.nodeAt(tree, ["基础涩涩", "其他"])?.count === 1)
 
 console.log("drawing entries")
 const entries = [
@@ -103,20 +79,6 @@ const snapshot = "/private/tmp/claude-501/-Users-huzhecheng-Projects/463d3901-aa
 if (existsSync(snapshot)) {
   console.log("real snapshot")
   const raw = JSON.parse(readFileSync(snapshot, "utf8"))
-  check("the site's code resolves in the real tree", JSON.stringify(C.pathFromCode(raw.tree, "1vpbhbm")) === '["基础涩涩"]')
-  let leaves = 0
-  const walk = (nodes, prefix) => {
-    for (const n of nodes) {
-      const p = prefix.concat(n.name)
-      // Every path must round-trip through its own code.
-      if (C.pathFromCode(raw.tree, C.encodePathCode(p)).join("/") !== p.join("/")) {
-        failures++; console.log("  FAIL round trip " + p.join("/"))
-      }
-      if (n.children?.length) walk(n.children, p); else leaves++
-    }
-  }
-  walk(raw.tree, [])
-  check("every category round-trips through its code (" + leaves + " leaves)", true)
   const slimEntries = raw.entries.map((e) => ({ title: e.title ?? "", path: e.path ?? [], tags: e.tags ?? "" }))
   const drawable = C.entriesUnder(slimEntries, ["基础涩涩"])
   check("基础涩涩 has drawable entries", drawable.length > 1000, String(drawable.length))

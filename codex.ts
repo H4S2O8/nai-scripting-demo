@@ -9,11 +9,6 @@
  * image metadata this app never uses. It is slimmed to {title, path, tags}
  * (about half) and cached on disk, keyed by release, so a second use costs
  * one small pointer fetch.
- *
- * The site's ?p= short code is FNV-1a of the category path, base36. It is a
- * pure function of the path, so a link from the site can be resolved without
- * asking the site anything — encodePathCode below is a line-for-line port of
- * its path-code.js.
  */
 const SITE = "https://novelai.quicktagcloud.com"
 const DATA = SITE + "/data"
@@ -53,81 +48,10 @@ export type Codex = {
   entries: CodexEntry[]
 }
 
-/* -------------------------------------------------------------- short code */
-
-// path-code.js: the separator is the ASCII unit separator, a control character,
-// because category names have contained both "/" and "+".
-const PATH_SEP = "\u001f"
-
-function fnv1a(text: string): number {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i)
-    hash ^= code & 0xff
-    hash = Math.imul(hash, 0x01000193)
-    hash ^= (code >>> 8) & 0xff
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return hash >>> 0
-}
-
-/** The site's ?p= code for a category path. Empty for the root. */
-export function encodePathCode(path: string[]): string {
-  const segments = path.map((seg) => String(seg || "").trim()).filter(Boolean)
-  if (segments.length === 0) return ""
-  return fnv1a(segments.join(PATH_SEP)).toString(36)
-}
-
-/** Resolve a ?p= code against a tree. Empty when nothing matches. */
-export function pathFromCode(tree: CodexNode[], code: string): string[] {
-  const wanted = String(code || "").trim()
-  if (!wanted) return []
-  let found: string[] = []
-  const walk = (nodes: CodexNode[], prefix: string[]): boolean => {
-    for (const node of nodes) {
-      const path = prefix.concat(node.name)
-      if (encodePathCode(path) === wanted) {
-        found = path
-        return true
-      }
-      if (walk(node.children, path)) return true
-    }
-    return false
-  }
-  walk(tree, [])
-  return found
-}
-
-/**
- * Pull the codex id and ?p= code out of a pasted site URL.
- *
- * Accepts the full address, or just the query string, or just a code. Returns
- * null only when there is nothing usable at all.
- */
-export function parseSiteLink(text: string): { codex: string; code: string } | null {
-  const trimmed = text.trim()
-  if (!trimmed) return null
-  const query = trimmed.indexOf("?") >= 0 ? trimmed.slice(trimmed.indexOf("?") + 1) : trimmed
-  const params: Record<string, string> = {}
-  for (const pair of query.split(/[&#]/)) {
-    const eq = pair.indexOf("=")
-    if (eq <= 0) continue
-    try {
-      params[decodeURIComponent(pair.slice(0, eq))] = decodeURIComponent(pair.slice(eq + 1))
-    } catch {
-      /* a malformed escape is not worth failing the whole paste over */
-    }
-  }
-  if (params.c || params.p) return { codex: params.c ?? "", code: params.p ?? "" }
-  // A bare short code, as someone might copy from the address bar's tail.
-  if (/^[0-9a-z]{4,10}$/.test(trimmed)) return { codex: "", code: trimmed }
-  return null
-}
-
 /* ------------------------------------------------------------ tree helpers */
 
 /** The node at a path, or null. */
-export function nodeAt(tree: CodexNode[], path: string[]): CodexNode | null {
+function nodeAt(tree: CodexNode[], path: string[]): CodexNode | null {
   let nodes = tree
   let node: CodexNode | null = null
   for (const name of path) {
