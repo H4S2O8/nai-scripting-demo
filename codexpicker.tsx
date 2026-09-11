@@ -1,16 +1,15 @@
 /**
- * Draw a random prompt from a category of 所长色色 (suozhang_r18) on
- * novelai.quicktagcloud.com, and hand it to the prompt editor as a temporary
- * chunk.
+ * Draw a random entry from a category of 所长色色 (suozhang_r18) on
+ * novelai.quicktagcloud.com, into the request's codex slot.
  *
  * The layout mirrors the site's own: a horizontal rail of chips, one per
  * category, single-select. Picking a category that has children opens a
  * second rail beneath it, and so on down. "全部" on a rail means the whole
  * level. One button draws from everything under the current selection.
  *
- * Temporary means: the chunk carries its own expansion inside the prompt's
- * marker, so it displays and expands like any library chunk without ever
- * being written to the library or the account.
+ * The slot holds one whole entry — base prompt and per-character prompts —
+ * and nai.ts merges it in at build time. Nothing the user typed is edited,
+ * and the draw is never written to the chunk library or the account.
  */
 import {
   Button,
@@ -35,8 +34,13 @@ import {
   entriesUnder,
   loadCodex,
   loadCodexList,
+  loadDrawn,
+  markDrawn,
   randomEntry,
+  resetDrawn,
+  undrawn,
 } from "./codex"
+import { CodexDraw } from "./nai"
 import { Card, Chip } from "./ui"
 import { ACCENT, PAGE_BG } from "./theme"
 
@@ -86,16 +90,16 @@ function Rail({
 
 export function CodexPickerSheet({
   sessionKey,
+  current,
   onPick,
   onClose,
 }: {
   /** Changes on every open: sheet content is not rebuilt between presentations. */
   sessionKey: string
-  /**
-   * Called for every draw. `replacing` is the previous pick from this session,
-   * so "换一个" swaps the chunk in place instead of stacking a second one.
-   */
-  onPick: (pick: CodexPick, replacing: CodexPick | null) => void
+  /** What the slot holds now, so the sheet can show it and re-roll from it. */
+  current: CodexDraw | null
+  /** Every draw replaces the slot; there is only ever one. */
+  onPick: (pick: CodexPick) => void
   onClose: () => void
 }) {
   const [codex, setCodex] = useState<Codex | null>(null)
@@ -104,6 +108,7 @@ export function CodexPickerSheet({
   const [status, setStatus] = useState("")
   const [busy, setBusy] = useState(false)
   const [last, setLast] = useState<CodexPick | null>(null)
+  const [drawn, setDrawn] = useState<Record<string, boolean>>({})
 
   const say = (line: string) => setStatus(line)
 
@@ -114,6 +119,7 @@ export function CodexPickerSheet({
       const loaded = await loadCodex(target, say)
       setCodex(loaded.codex)
       setMeta(target)
+      setDrawn(loadDrawn(loaded.codex.id))
       // Land where the user left off, if that category still exists.
       const remembered = loadLastPath()
       const valid = remembered.every((_, i) =>
@@ -170,19 +176,38 @@ export function CodexPickerSheet({
   }
 
   const pool = codex ? entriesUnder(codex.entries, path) : []
+  // Once drawn, an entry stays out until the user resets — the point of a
+  // random draw is to see something new.
+  const fresh = undrawn(pool, drawn)
+  const exhausted = pool.length > 0 && fresh.length === 0
   const scope = path.length ? path.join(" › ") : codex?.title ?? ""
 
-  const draw = (stack: boolean) => {
+  const draw = () => {
     if (!codex) return
-    const entry = randomEntry(pool)
+    const entry = randomEntry(fresh)
     if (!entry) {
-      say("这个分类下没有可用的 prompt")
+      say(pool.length ? "这个分类抽完了，重置后可以再来" : "这个分类下没有可用的 prompt")
       return
     }
+    setDrawn(markDrawn(codex.id, entry.id))
     const pick: CodexPick = { entry, codexId: codex.id, path }
-    onPick(pick, stack ? null : last)
+    onPick(pick)
     setLast(pick)
-    say(`${stack ? "再填入" : "已填入"}「${entry.title}」`)
+    say(`已抽到「${entry.title}」 · 这一类还剩 ${fresh.length - 1} 条没抽过`)
+  }
+
+  // What to show in the result card: this session's draw, or what the slot
+  // already held when the sheet opened.
+  const shown = last
+    ? { title: last.entry.title, path: last.entry.path, base: last.entry.tags, characters: last.entry.characters, identity: last.entry.identity }
+    : current
+
+  const reset = () => {
+    if (!codex) return
+    // Only this scope: resetting 基础涩涩 must not forget what was drawn from
+    // 涩涩服饰.
+    setDrawn(resetDrawn(codex.id, pool.map((entry) => entry.id)))
+    say(`已重置「${scope}」的抽取记录`)
   }
 
   return (
@@ -212,39 +237,46 @@ export function CodexPickerSheet({
           title={scope || "…"}
           systemImage="dice"
           trailing={
-            <Text font={11} foregroundStyle="tertiaryLabel">
-              {pool.length} 条
+            <Text font={11} foregroundStyle={exhausted ? ("systemOrange" as any) : "tertiaryLabel"}>
+              {exhausted ? `${pool.length} 条已全部抽过` : `未抽 ${fresh.length} / 共 ${pool.length}`}
             </Text>
           }
         >
           <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
             <Chip
-              label={last ? "换一个" : "随机一个"}
+              label={shown ? "换一个" : "随机一个"}
               selected={true}
-              disabled={busy || pool.length === 0}
-              onTap={() => draw(false)}
+              disabled={busy || fresh.length === 0}
+              onTap={draw}
             />
-            {last ? (
-              <Chip
-                label="再加一个"
-                selected={false}
-                disabled={busy || pool.length === 0}
-                onTap={() => draw(true)}
-              />
-            ) : null}
             <Spacer />
+            {pool.length > fresh.length ? (
+              <Chip label="重置已抽" selected={false} disabled={busy} onTap={reset} />
+            ) : null}
           </HStack>
-          {last ? (
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          {shown ? (
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
               <Text font={12} fontWeight="semibold" foregroundStyle={ACCENT}>
-                {last.entry.title}
+                {shown.title}
               </Text>
               <Text font={11} foregroundStyle="tertiaryLabel">
-                {last.entry.path.join(" › ")}
+                {shown.path.join(" › ")}
               </Text>
-              <Text font={11} foregroundStyle="secondaryLabel" lineLimit={4}>
-                {last.entry.tags}
-              </Text>
+              {shown.base.trim() ? (
+                <Text font={11} foregroundStyle="secondaryLabel" lineLimit={3}>
+                  {shown.base}
+                </Text>
+              ) : null}
+              {shown.characters.map((prompt, index) => (
+                <Text key={String(index)} font={11} foregroundStyle="secondaryLabel" lineLimit={2}>
+                  {`角色 ${index + 1} → 人物槽位 ${index + 1}：${prompt}`}
+                </Text>
+              ))}
+              {shown.identity ? (
+                <Text font={11} foregroundStyle={"systemOrange" as any}>
+                  ⚠ 这条的角色 prompt 含发色/瞳色等外貌词，可能盖过你写的角色
+                </Text>
+              ) : null}
             </VStack>
           ) : null}
         </Card>

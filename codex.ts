@@ -34,9 +34,25 @@ export type CodexNode = {
 }
 
 export type CodexEntry = {
+  /** The site's own id, so a draw can be remembered across sessions. */
+  id: string
   title: string
   path: string[]
+  /** The base prompt: scene, framing, and whatever is not per-character. */
   tags: string
+  /**
+   * Per-character prompts, in slot order — the site stores V4-style split
+   * prompts, and for about a quarter of 所长色色 this is where the action is.
+   * They are choreography ("standing before character1", "holding leash"),
+   * meant to be appended to whatever character already sits in each slot.
+   */
+  characters: string[]
+  /**
+   * Whether any character prompt names hair, eyes, ears, horns and the like.
+   * Rare (4%), but such an entry will fight the user's own character rather
+   * than pose it, so the picker says so.
+   */
+  identity: boolean
 }
 
 export type Codex = {
@@ -44,9 +60,13 @@ export type Codex = {
   title: string
   version: string
   release: string
+  /** Bumped when the slimmed shape changes; an older cache is re-fetched. */
+  schema: number
   tree: CodexNode[]
   entries: CodexEntry[]
 }
+
+const CACHE_SCHEMA = 3
 
 /* ------------------------------------------------------------ tree helpers */
 
@@ -78,7 +98,9 @@ export function childrenAt(tree: CodexNode[], path: string[]): CodexNode[] {
  */
 export function entriesUnder(entries: CodexEntry[], path: string[]): CodexEntry[] {
   return entries.filter((entry) => {
-    if (!entry.tags.trim()) return false
+    // An entry whose base is empty but whose characters are not is still a
+    // draw — that is exactly the shape a quarter of the codex takes.
+    if (!entry.tags.trim() && entry.characters.length === 0) return false
     if (entry.path.length < path.length) return false
     for (let i = 0; i < path.length; i++) {
       if (entry.path[i] !== path[i]) return false
@@ -90,6 +112,45 @@ export function entriesUnder(entries: CodexEntry[], path: string[]): CodexEntry[
 export function randomEntry(list: CodexEntry[]): CodexEntry | null {
   if (list.length === 0) return null
   return list[Math.floor(Math.random() * list.length)]
+}
+
+/* ---------------------------------------------------------- drawn record */
+
+const DRAWN_PREFIX = "nai.codex.drawn."
+
+/** Ids already drawn from this codex, so they are not offered again. */
+export function loadDrawn(codexId: string): Record<string, boolean> {
+  const raw = Storage.get<string[]>(DRAWN_PREFIX + codexId)
+  const out: Record<string, boolean> = {}
+  if (Array.isArray(raw)) for (const id of raw) if (typeof id === "string") out[id] = true
+  return out
+}
+
+export function markDrawn(codexId: string, id: string): Record<string, boolean> {
+  const drawn = loadDrawn(codexId)
+  drawn[id] = true
+  Storage.set(DRAWN_PREFIX + codexId, Object.keys(drawn))
+  return drawn
+}
+
+/**
+ * Forget draws. With `ids`, only those — used to reset one category without
+ * touching the record for the rest of the codex.
+ */
+export function resetDrawn(codexId: string, ids?: string[]): Record<string, boolean> {
+  if (!ids) {
+    Storage.set(DRAWN_PREFIX + codexId, [])
+    return {}
+  }
+  const drawn = loadDrawn(codexId)
+  for (const id of ids) delete drawn[id]
+  Storage.set(DRAWN_PREFIX + codexId, Object.keys(drawn))
+  return drawn
+}
+
+/** The entries not yet drawn. */
+export function undrawn(list: CodexEntry[], drawn: Record<string, boolean>): CodexEntry[] {
+  return list.filter((entry) => !drawn[entry.id])
 }
 
 /* ------------------------------------------------------------------ fetch */
@@ -144,7 +205,12 @@ function readCache(id: string): Codex | null {
   try {
     if (!FileManager.existsSync(path)) return null
     const parsed = JSON.parse(FileManager.readAsStringSync(path))
-    if (parsed && typeof parsed.release === "string" && Array.isArray(parsed.entries)) {
+    if (
+      parsed &&
+      typeof parsed.release === "string" &&
+      Array.isArray(parsed.entries) &&
+      parsed.schema === CACHE_SCHEMA
+    ) {
       return parsed as Codex
     }
   } catch {
@@ -171,20 +237,45 @@ function normalizeTree(raw: any): CodexNode[] {
     }))
 }
 
+/**
+ * Words that describe who a character IS rather than what they are doing.
+ *
+ * Drawn from a census of 所长色色's character prompts: 87% carry pose and
+ * interaction, and only these identity words — in 4% of them — would override
+ * a character the user has already written. Body-shape words (curvy, small
+ * breasts) are left out on purpose: they are part of most poses' vocabulary
+ * and flagging them would mark half the codex.
+ */
+const IDENTITY_WORDS =
+  /\b(?:blonde|(?:black|brown|silver|white|grey|gray|red|blue|pink|purple|green|orange|blonde) hair|twintails?|ponytail|braids?|bangs|(?:blue|red|green|brown|purple|yellow|golden|amber|grey|gray|pink|heterochromia) eyes|heterochromia|elf|(?:cat|fox|dog|wolf|bunny|rabbit|animal) ears|horns?|wings|halo)\b/i
+
+function characterPromptsOf(entry: any): string[] {
+  if (!Array.isArray(entry?.characterPrompts)) return []
+  return entry.characterPrompts
+    .map((character: any) => String(character?.prompt ?? "").trim().replace(/^[,\s]+|[,\s]+$/g, ""))
+    .filter((prompt: string) => prompt.length > 0)
+}
+
 /** Keep what the picker needs and drop the image metadata, which is most of the file. */
-function slim(raw: any, id: string, release: string): Codex {
+export function slim(raw: any, id: string, release: string): Codex {
   const entries: CodexEntry[] = (Array.isArray(raw?.entries) ? raw.entries : [])
     .filter((entry: any) => entry && typeof entry === "object")
-    .map((entry: any) => ({
+    .map((entry: any, index: number) => ({
+      // The site's id when it has one; otherwise something stable enough to
+      // remember a draw by, which a position in the file is not.
+      id: String(entry.id ?? "").trim() || `${(entry.path ?? []).join("/")}#${entry.title ?? index}`,
       title: String(entry.title ?? "").trim(),
       path: Array.isArray(entry.path) ? entry.path.map((seg: any) => String(seg)) : [],
-      tags: String(entry.tags ?? "").trim(),
+      tags: String(entry.tags ?? "").trim().replace(/^[,\s]+|[,\s]+$/g, ""),
+      characters: characterPromptsOf(entry),
+      identity: characterPromptsOf(entry).some((prompt) => IDENTITY_WORDS.test(prompt)),
     }))
   return {
     id,
     title: String(raw?.title ?? id),
     version: String(raw?.version ?? ""),
     release,
+    schema: CACHE_SCHEMA,
     tree: normalizeTree(raw?.tree),
     entries,
   }

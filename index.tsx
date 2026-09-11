@@ -53,6 +53,7 @@ import { ChunksPage } from "./chunkspage"
 import { GenerateTab } from "./generate"
 import { ParamsTab } from "./params"
 import { GalleryTab } from "./gallery"
+import { CodexPickerSheet } from "./codexpicker"
 import { CharactersTab } from "./characters"
 import { PromptEditor } from "./prompteditor"
 import { StatPill } from "./ui"
@@ -118,6 +119,10 @@ function MainView() {
   const [status, setStatus] = useState("准备就绪")
 
   const [accountOpen, setAccountOpen] = useState(false)
+  const [codexOpen, setCodexOpen] = useState(false)
+  // Counter, not boolean: the picker's sessionKey. Sheet content is not
+  // rebuilt between presentations.
+  const [codexSession, setCodexSession] = useState(0)
   // Bumped when the active account or its credentials change, so every page
   // that caches something account-scoped re-reads it.
   const [accountKey, setAccountKey] = useState(0)
@@ -329,6 +334,14 @@ function MainView() {
     openViewer: () => setViewerOpen(true),
     openCharacters: () => selection.setValue(TAB_CHARACTERS),
     openAccount: () => setAccountOpen(true),
+    openCodex: () => {
+      setCodexSession((n) => n + 1)
+      setCodexOpen(true)
+    },
+    clearCodex: () => {
+      patch({ codex: null })
+      toast("已清除词典抽取")
+    },
     reuse: (image) => {
       if (image.params) {
         // The whole request, so the result is reproduced rather than
@@ -391,6 +404,29 @@ function MainView() {
         ),
       }}
       sheet={[
+        {
+          isPresented: codexOpen,
+          onChanged: setCodexOpen,
+          content: (
+            <CodexPickerSheet
+              sessionKey={String(codexSession)}
+              current={params.codex}
+              onPick={(pick) => {
+                patch({
+                  codex: {
+                    id: pick.entry.id,
+                    title: pick.entry.title,
+                    path: pick.path,
+                    base: pick.entry.tags,
+                    characters: pick.entry.characters,
+                    identity: pick.entry.identity,
+                  },
+                })
+              }}
+              onClose={() => setCodexOpen(false)}
+            />
+          ),
+        },
         {
           isPresented: accountOpen,
           onChanged: setAccountOpen,

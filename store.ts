@@ -6,6 +6,7 @@
  */
 import {
   CharacterPrompt,
+  CodexDraw,
   DEFAULT_PARAMS,
   GenerateParams,
   GeneratedImage,
@@ -95,6 +96,26 @@ export function normalizeParams(raw: Partial<GenerateParams> | null): GeneratePa
     variety: toBool(value.variety, DEFAULT_PARAMS.variety),
     transparent: toBool(value.transparent, DEFAULT_PARAMS.transparent),
     batch: Math.min(8, Math.max(1, Math.round(toNumber(value.batch, DEFAULT_PARAMS.batch)))),
+    codex: normalizeCodex(value.codex),
+  }
+}
+
+function normalizeCodex(value: unknown): CodexDraw | null {
+  if (!value || typeof value !== "object") return null
+  const raw = value as Record<string, unknown>
+  const base = toText(raw.base, "")
+  const characters = Array.isArray(raw.characters)
+    ? raw.characters.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : []
+  // A draw with nothing in it is no draw.
+  if (!base.trim() && characters.length === 0) return null
+  return {
+    id: toText(raw.id, ""),
+    title: toText(raw.title, ""),
+    path: Array.isArray(raw.path) ? raw.path.filter((seg): seg is string => typeof seg === "string") : [],
+    base,
+    characters,
+    identity: toBool(raw.identity, false),
   }
 }
 

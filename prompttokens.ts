@@ -239,43 +239,6 @@ export function chunkStateIn(tokens: PromptToken[], chunk: Chunk): ChunkState {
 }
 
 /** Insert the chunk as one token, or take it back out if it is already there. */
-/**
- * Append a chunk that is not in the library.
- *
- * The expansion travels inside the marker, so nothing here needs a library
- * entry — this is what makes a codex draw a temporary chunk rather than a
- * saved one. tidy() first, for the same reason toggleChunkIn does it.
- */
-export function appendChunk(
-  tokens: PromptToken[],
-  label: string,
-  expansion: string,
-): PromptToken[] {
-  if (!expansion.trim()) return tokens
-  return tidy(tokens).concat([{ kind: "chunk", label, expansion }])
-}
-
-/**
- * Swap one chunk for another, in place.
- *
- * Matches on label, which is what a temporary chunk is identified by. When the
- * label is no longer present — the user removed it by hand — the new chunk is
- * appended instead, so "换一个" never silently does nothing.
- */
-export function replaceChunk(
-  tokens: PromptToken[],
-  oldLabel: string,
-  label: string,
-  expansion: string,
-): PromptToken[] {
-  if (!expansion.trim()) return tokens
-  const index = tokens.findIndex((token) => token.kind === "chunk" && token.label === oldLabel)
-  if (index === -1) return appendChunk(tokens, label, expansion)
-  const out = tokens.slice()
-  out[index] = { kind: "chunk", label, expansion }
-  return out
-}
-
 export function toggleChunkIn(tokens: PromptToken[], chunk: Chunk): PromptToken[] {
   const label = chunkLabel(chunk)
   const expansion = chunkExpansion(chunk)

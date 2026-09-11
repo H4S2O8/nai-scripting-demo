@@ -23,6 +23,7 @@ import {
 } from "scripting"
 
 import {
+  CodexDraw,
   SIZE_PRESETS,
   SIZE_PRESETS_1MP,
   SIZE_PRESETS_LARGE,
@@ -91,6 +92,70 @@ function PromptRow({
       </Text>
       <Spacer />
       <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
+    </HStack>
+  )
+}
+
+/** The codex slot: what was drawn, where it will land, and a way to drop it. */
+function CodexRow({
+  draw,
+  onTap,
+  onClear,
+}: {
+  draw: CodexDraw | null
+  onTap: () => void
+  onClear: () => void
+}) {
+  const filled = draw != null
+  const detail = draw
+    ? [
+        draw.base.trim() ? "场景" : "",
+        draw.characters.length ? `${draw.characters.length} 个角色 → 人物槽位` : "",
+        draw.identity ? "⚠ 含外貌" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : ""
+  return (
+    <HStack
+      spacing={8}
+      padding={{ horizontal: 11, vertical: 9 }}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      background={
+        <RoundedRectangle
+          cornerRadius={RADIUS_WELL}
+          fill={CARD_BG}
+          stroke={{ shapeStyle: CARD_STROKE, strokeStyle: { lineWidth: 1 } }}
+        />
+      }
+      onTapGesture={onTap}
+    >
+      <Image systemName="dice" font={11} foregroundStyle={ACCENT} />
+      <Text font={11} fontWeight="medium" foregroundStyle="secondaryLabel">
+        词典
+      </Text>
+      {filled ? (
+        <VStack alignment="leading" spacing={1}>
+          <Text font={12} foregroundStyle="label" lineLimit={1}>
+            {draw.title}
+          </Text>
+          <Text font={10} foregroundStyle={draw.identity ? ("systemOrange" as any) : "tertiaryLabel"} lineLimit={1}>
+            {detail}
+          </Text>
+        </VStack>
+      ) : (
+        <Text font={12} foregroundStyle="tertiaryLabel" lineLimit={1}>
+          从所长色色随机一条
+        </Text>
+      )}
+      <Spacer />
+      {filled ? (
+        <Button buttonStyle="plain" action={onClear}>
+          <Image systemName="xmark.circle.fill" font={13} foregroundStyle="tertiaryLabel" />
+        </Button>
+      ) : (
+        <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
+      )}
     </HStack>
   )
 }
@@ -294,6 +359,11 @@ export function GenerateTab({ wb }: { wb: Workbench }) {
             onTap={() => wb.editPrompt({ kind: "specific" })}
             emphasis
           />
+          {/* The fourth slot is the codex draw. It is not a text block: it
+              holds one whole entry — base plus per-character prompts — and is
+              merged into the request at build time, so the three blocks and
+              the character list above are never edited by a draw. */}
+          <CodexRow draw={params.codex} onTap={wb.openCodex} onClear={wb.clearCodex} />
         </VStack>
 
         {/* One row for the things that change between two generations. */}

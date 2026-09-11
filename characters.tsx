@@ -28,6 +28,9 @@ export function CharactersTab({ wb }: { wb: Workbench }) {
   const { params } = wb
   const limit = maxCharacterPrompts(params.model)
   const characters = params.characters ?? []
+  // The codex draw's per-character prompts, by slot. Shown, not editable:
+  // they live in the draw and are merged in at build time.
+  const drawn = params.codex?.characters ?? []
 
   return (
     <NavigationStack>
@@ -107,6 +110,11 @@ export function CharactersTab({ wb }: { wb: Workbench }) {
                     {summarizePrompt(character.prompt) || "点这里编辑"}
                   </Text>
                 </Well>
+                {drawn[index] ? (
+                  <Text font={11} foregroundStyle={ACCENT} lineLimit={2}>
+                    {"+ 词典：" + drawn[index]}
+                  </Text>
+                ) : null}
 
                 <FieldLabel text="角色负面词" />
                 <Well padding={9}>
@@ -177,6 +185,21 @@ export function CharactersTab({ wb }: { wb: Workbench }) {
               </Card>
             ))
           )}
+
+          {/* Draw characters past the user's own list fill empty slots at
+              build time. Say so here, or those people appear from nowhere. */}
+          {limit > 0 && drawn.length > characters.length ? (
+            <Card title="词典抽取补充的角色" systemImage="dice">
+              {drawn.slice(characters.length).map((prompt, offset) => (
+                <Text key={String(offset)} font={12} foregroundStyle="secondaryLabel" lineLimit={2}>
+                  {`角色 ${characters.length + offset + 1}：${prompt}`}
+                </Text>
+              ))}
+              <Text font={11} foregroundStyle="tertiaryLabel">
+                这些槽位你没有写，生成时只用词典的描述，不钉位置。想加外貌就在上面新增同序号的角色。
+              </Text>
+            </Card>
+          ) : null}
 
           {limit > 0 ? (
             <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>

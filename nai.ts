@@ -134,6 +134,26 @@ export type GenerateParams = {
   variety: boolean
   transparent: boolean
   batch: number
+  /**
+   * A draw from a quicktagcloud codex, held in its own slot.
+   *
+   * Not folded into the prompt blocks or the character list: the user's own
+   * text stays exactly as written, and the draw is merged in at build time —
+   * its base after the three blocks, each of its character prompts appended
+   * to the character in the same slot (or filling an empty one). Clearing it
+   * is then one field, and nothing the user typed has been touched.
+   */
+  codex: CodexDraw | null
+}
+
+export type CodexDraw = {
+  /** The site's entry id, for the drawn-record and for display. */
+  id: string
+  title: string
+  path: string[]
+  base: string
+  characters: string[]
+  identity: boolean
 }
 
 export const DEFAULT_PARAMS: GenerateParams = {
@@ -157,6 +177,7 @@ export const DEFAULT_PARAMS: GenerateParams = {
   smeaDyn: false,
   variety: false,
   transparent: false,
+  codex: null,
   batch: 1,
 }
 
@@ -425,6 +446,9 @@ export function effectivePrompt(params: GenerateParams): string {
     expandPrompt(params.stylePrompt.trim()),
     expandPrompt(params.characterPrompt.trim()),
     expandPrompt(params.prompt.trim()),
+    // The draw's base goes last: it is the most specific thing in the prompt
+    // and the one most likely to be swapped out between generations.
+    params.codex?.base.trim() ?? "",
   )
   const withQuality = mergePrompt(
     base,
@@ -448,19 +472,36 @@ function clamp01(value: number, fallback: number): number {
 }
 
 /** Drop empty captions and clamp coordinates before they reach the API. */
+/**
+ * The character captions the request will carry.
+ *
+ * A codex draw's characters are merged by slot: the user's own text leads and
+ * the draw's choreography follows, so "silver hair, cardigan" + "kneeling,
+ * holding leash" reads as one character. A slot the user left empty is filled
+ * by the draw alone, with no coordinates — the model places it.
+ */
 export function activeCharacters(params: GenerateParams): CharacterPrompt[] {
   const limit = maxCharacterPrompts(params.model)
   if (limit === 0) return []
-  return (params.characters ?? [])
-    .map((character) => ({
-      prompt: expandPrompt((character.prompt ?? "").trim()),
-      negative: expandPrompt((character.negative ?? "").trim()),
-      useCoords: character.useCoords === true,
-      x: clamp01(Number(character.x), 0.5),
-      y: clamp01(Number(character.y), 0.5),
-    }))
-    .filter((character) => character.prompt.length > 0)
-    .slice(0, limit)
+  const own = params.characters ?? []
+  const extra = params.codex?.characters ?? []
+  const count = Math.max(own.length, extra.length)
+  const merged: CharacterPrompt[] = []
+  for (let i = 0; i < count; i++) {
+    const character = own[i]
+    const prompt = mergePrompt(
+      expandPrompt((character?.prompt ?? "").trim()),
+      (extra[i] ?? "").trim(),
+    )
+    merged.push({
+      prompt,
+      negative: expandPrompt((character?.negative ?? "").trim()),
+      useCoords: character?.useCoords === true,
+      x: clamp01(Number(character?.x), 0.5),
+      y: clamp01(Number(character?.y), 0.5),
+    })
+  }
+  return merged.filter((character) => character.prompt.length > 0).slice(0, limit)
 }
 
 export const MAX_SEED = 0xffffffff

@@ -183,6 +183,22 @@ console.log("the pool stays bounded as history rolls over")
   check("the newest row kept its snapshot", history[0].params.prompt === "unique 599")
 }
 
+console.log("the codex slot")
+{
+  delete STORE["nai.history.v2"]; delete STORE["nai.paramspool.v1"]
+  const draw = { id: "cx-1", title: "遛狗", path: ["基础涩涩"], base: "leash", characters: ["girl, kneeling"], identity: true }
+  S.pushHistory([], image({ params: params({ codex: draw }) }))
+  const back = S.loadHistory()[0].params
+  // Reuse must bring the draw back with the rest of the request.
+  check("a draw survives the snapshot", back.codex != null && back.codex.title === "遛狗")
+  check("its characters survive", JSON.stringify(back.codex.characters) === '["girl, kneeling"]')
+  check("its identity flag survives", back.codex.identity === true)
+  check("no draw normalizes to null", S.normalizeParams({ codex: undefined }).codex === null)
+  check("junk normalizes to null", S.normalizeParams({ codex: "nope" }).codex === null)
+  check("an empty draw normalizes to null", S.normalizeParams({ codex: { base: " ", characters: [] } }).codex === null)
+  check("a partial draw is repaired", S.normalizeParams({ codex: { base: "x" } }).codex.characters.length === 0)
+}
+
 console.log("older releases")
 {
   delete STORE["nai.paramspool.v1"]

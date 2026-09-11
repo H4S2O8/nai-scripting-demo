@@ -199,50 +199,6 @@ console.log("hostile input")
 }
 
 
-console.log("temporary chunks (codex draws)")
-{
-  const text = (t) => ({ kind: "text", text: t })
-  const chunk = (label, expansion) => ({ kind: "chunk", label, expansion })
-
-  const base = [text("1girl, ")]
-  const added = P.appendChunk(base, "体位A", "missionary, on back")
-  check("append lands a chunk at the end", added[added.length - 1].kind === "chunk" && added[added.length - 1].label === "体位A")
-  check("append keeps the text before it", added[0].kind === "text" && added[0].text.startsWith("1girl"))
-  // The expansion is inside the marker, so the chunk needs no library entry.
-  check("the drawn prompt survives serialize → parse",
-        P.parsePrompt(P.serializePrompt(added)).some((t) => t.kind === "chunk" && t.expansion === "missionary, on back"))
-  check("expanding sends the prompt, not the title", P.expandPrompt(P.serializePrompt(added)).includes("missionary, on back") && !P.expandPrompt(P.serializePrompt(added)).includes("体位A"))
-  check("an empty draw is ignored", P.appendChunk(base, "x", "   ").length === base.length)
-
-  // 换一个: the old chunk is swapped where it stands, not stacked.
-  const swapped = P.replaceChunk(added, "体位A", "体位B", "cowgirl position")
-  check("replace keeps the token count", swapped.length === added.length)
-  check("replace swaps the label", swapped.some((t) => t.kind === "chunk" && t.label === "体位B"))
-  check("replace swaps the expansion", swapped.some((t) => t.kind === "chunk" && t.expansion === "cowgirl position"))
-  check("the old chunk is gone", !swapped.some((t) => t.kind === "chunk" && t.label === "体位A"))
-
-  // The user removed the temporary chunk by hand, then hit 换一个: it must
-  // still do something visible.
-  const without = added.filter((t) => t.kind !== "chunk")
-  const fallback = P.replaceChunk(without, "体位A", "体位C", "doggystyle")
-  check("replacing a missing chunk appends instead", fallback.some((t) => t.kind === "chunk" && t.label === "体位C"))
-
-  // Two chunks with the same label: replace touches the first only, and
-  // never both — a draw replaces one pick, not a family of them.
-  const twins = [chunk("同名", "a"), text(", "), chunk("同名", "b")]
-  const one = P.replaceChunk(twins, "同名", "新", "c")
-  check("replace touches one chunk, not every namesake",
-        one.filter((t) => t.kind === "chunk" && t.label === "新").length === 1 &&
-        one.some((t) => t.kind === "chunk" && t.expansion === "b"))
-
-  // Titles from the site contain commas and colons; they must not break the
-  // marker or leak into the sent prompt.
-  const odd = P.appendChunk(base, "NAI4.5时期：a, b", "artist:x, 0.6::y::")
-  const round = P.parsePrompt(P.serializePrompt(odd))
-  check("a title with punctuation round-trips", round.some((t) => t.kind === "chunk" && t.label === "NAI4.5时期：a, b"))
-  check("a weighted expansion round-trips", round.some((t) => t.kind === "chunk" && t.expansion === "artist:x, 0.6::y::"))
-}
-
 console.log("prompt composition (nai.ts)")
 {
   const dest2 = join(out, "nai.mjs")
@@ -366,6 +322,65 @@ console.log("prompt composition (nai.ts)")
       characters: new Array(9).fill(0).map(() => ({ prompt: "a", negative: "", useCoords: false, x: 0.5, y: 0.5 })),
     }).length === 6,
   )
+}
+
+console.log("codex slot merge (nai.ts)")
+{
+  const dest3 = join(out, "nai2.mjs")
+  execFileSync("npx", ["--yes", "esbuild@0.24.0", join(root, "nai.ts"), "--format=esm", "--bundle", "--outfile=" + dest3],
+    { stdio: ["ignore", "ignore", "inherit"] })
+  const N = await import(dest3)
+  const base = { ...N.DEFAULT_PARAMS, model: "nai-diffusion-5-full", qualityPreset: "none", ucPreset: 3,
+    stylePrompt: "watercolor", characterPrompt: "", prompt: "1girl, park",
+    characters: [
+      { prompt: "girl, silver hair, cardigan", negative: "", useCoords: true, x: 0.3, y: 0.7 },
+    ] }
+  const draw = { id: "x", title: "遛狗", path: ["基础涩涩"], base: "outdoor, street, leash",
+    characters: ["girl, red collar, kneeling", "girl, standing before character1, holding leash"], identity: false }
+
+  check("no draw means no change", N.effectivePrompt(base) === N.effectivePrompt({ ...base, codex: null }))
+
+  const withDraw = { ...base, codex: draw }
+  const prompt = N.effectivePrompt(withDraw)
+  // The draw's base is the most specific part of the request, so it goes last.
+  check("the draw's base is appended after the three blocks", prompt.endsWith("outdoor, street, leash"), prompt)
+  check("the user's blocks are untouched", prompt.startsWith("watercolor") && prompt.includes("1girl, park"))
+
+  const chars = N.activeCharacters(withDraw)
+  // mergePrompt drops the repeated "girl": the draw's captions all open with
+  // the singular subject, and so does the user's, so every merge would
+  // otherwise carry it twice.
+  check("slot 1 merges the user's text with the draw's, deduplicated", chars[0].prompt === "girl, silver hair, cardigan, red collar, kneeling", chars[0].prompt)
+  check("the user's text leads in the merged slot", chars[0].prompt.startsWith("girl, silver hair"))
+  check("slot 1 keeps the user's coordinates", chars[0].useCoords === true && chars[0].x === 0.3 && chars[0].y === 0.7)
+  check("slot 2 is filled by the draw alone", chars[1].prompt === "girl, standing before character1, holding leash")
+  check("a draw-only slot has no pinned position", chars[1].useCoords === false)
+  check("nothing in params.characters was modified", withDraw.characters.length === 1 && withDraw.characters[0].prompt === "girl, silver hair, cardigan")
+
+  // A draw with an empty base but characters — a quarter of the codex.
+  const onlyChars = { ...base, codex: { ...draw, base: "" } }
+  check("an empty base adds nothing to the prompt", N.effectivePrompt(onlyChars) === N.effectivePrompt(base))
+  check("its characters still land", N.activeCharacters(onlyChars).length === 2)
+
+  // A draw with a base but no characters leaves the character list as is.
+  const onlyBase = { ...base, codex: { ...draw, characters: [] } }
+  check("no draw characters means the user's list alone", N.activeCharacters(onlyBase).length === 1)
+
+  // The user has no characters at all; the draw supplies them.
+  const none = { ...base, characters: [], codex: draw }
+  check("a draw can populate an empty character list", N.activeCharacters(none).length === 2)
+
+  // V3 has no character slots: the draw's characters cannot land anywhere.
+  const v3 = { ...base, model: "nai-diffusion-3", codex: draw }
+  check("on a model without slots the draw's characters are dropped, not crashed", N.activeCharacters(v3).length === 0)
+  check("its base still merges on V3", N.effectivePrompt(v3).includes("outdoor, street, leash"))
+
+  // The full request must carry the merge, not just the helpers.
+  const payload = N.buildPayload(withDraw, 1)
+  const caps = payload.parameters.v4_prompt.caption.char_captions
+  check("the payload carries both merged captions", caps.length === 2)
+  check("the payload's slot 1 is the merged text", caps[0].char_caption === chars[0].prompt)
+  check("the payload's base carries the draw", payload.parameters.v4_prompt.caption.base_caption.includes("leash"))
 }
 
 console.log(failures === 0 ? "\n[ok] prompt token model holds" : "\n[fail] " + failures + " check(s) failed")

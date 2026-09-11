@@ -81,6 +81,9 @@ export type Workbench = {
   openViewer: () => void
   openCharacters: () => void
   openAccount: () => void
+  /** The codex draw: open the picker, or drop the current draw. */
+  openCodex: () => void
+  clearCodex: () => void
   reuse: (image: GeneratedImage) => void
   saveImage: (image: GeneratedImage) => void
   shareImage: (image: GeneratedImage) => void
