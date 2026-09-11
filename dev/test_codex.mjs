@@ -147,6 +147,40 @@ console.log("artist codex snapshot")
   }
 }
 
+console.log("memory cache")
+{
+  // The disk cache path, as codex.ts builds it from the shimmed FileManager.
+  const path = "/docs/NAI-Studio/.codex/memtest.json"
+  const stored = (title) => JSON.stringify({ id: "memtest", title, version: "", release: "r1", schema: 4, tree: [], entries: [{ id: "1", title: "x", path: [], tags: "a", characters: [], batches: [], identity: false }] })
+  FILES[path] = stored("first")
+  check("a disk cache is read", C.cachedCodex("memtest")?.title === "first")
+  // The point of the memory copy: reopening the picker must not re-read and
+  // re-parse the file. Changing the file underneath proves the read is skipped.
+  FILES[path] = stored("second")
+  check("the second read comes from memory, not disk", C.cachedCodex("memtest")?.title === "first")
+  C.clearCodexCache("memtest")
+  check("clearing drops the memory copy too", C.cachedCodex("memtest") === null)
+  check("clearing drops the disk copy", !(path in FILES))
+  // A cache from an older slim shape must be treated as absent, not trusted.
+  FILES[path] = JSON.stringify({ id: "memtest", release: "r1", schema: 1, tree: [], entries: [] })
+  check("an old-schema cache is ignored", C.cachedCodex("memtest") === null)
+  delete FILES[path]
+  check("nothing cached reads as null", C.cachedCodex("nope") === null)
+}
+
+console.log("cached codex list")
+{
+  delete STORE["nai.codex.list.v1"]
+  check("no list cached to start", C.cachedCodexList() === null)
+  STORE["nai.codex.list.v1"] = [{ id: "a", name: "A", entryCount: 1, nsfw: false, updateFilters: [{ id: "2026.9.10", label: "9.10更新", latest: true }] }]
+  const list = C.cachedCodexList()
+  check("a stored list is served", list != null && list[0].id === "a")
+  check("its batch labels survive", list[0].updateFilters.length === 1 && list[0].updateFilters[0].latest === true)
+  // Once read, the list is held in memory; Storage is not consulted again.
+  STORE["nai.codex.list.v1"] = [{ id: "b", name: "B", entryCount: 1, nsfw: false }]
+  check("a second read comes from memory", C.cachedCodexList()[0].id === "a")
+}
+
 console.log("drawn record")
 {
   delete STORE["nai.codex.drawn.cx"]

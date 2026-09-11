@@ -35,9 +35,11 @@ import {
   CodexNode,
   childrenAt,
   clearCodexCache,
+  cachedCodex,
+  cachedCodexList,
+  ensureFreshCodex,
   entriesUnder,
   inBatch,
-  loadCodex,
   loadCodexList,
   loadDrawn,
   markDrawn,
@@ -144,55 +146,91 @@ export function CodexPickerSheet({
 
   const say = (line: string) => setStatus(line)
 
+  /** Put a codex on screen and restore where the user was in it. */
+  const show = (target: CodexMeta, loaded: Codex) => {
+    setCodex(loaded)
+    setMeta(target)
+    setDrawn(loadDrawn(loaded.id))
+    const remembered = loadLastPath(target.id)
+    const valid = remembered.every((_, i) =>
+      childrenAt(loaded.tree, remembered.slice(0, i)).some((n) => n.name === remembered[i]),
+    )
+    setPath(valid ? remembered : [])
+    const rememberedBatch = Storage.get<string>(BATCH_KEY + target.id)
+    const latest = target.updateFilters.find((f) => f.latest)?.id ?? ""
+    setBatch(
+      typeof rememberedBatch === "string" &&
+        target.updateFilters.some((f) => f.id === rememberedBatch)
+        ? rememberedBatch
+        : spec.preferLatestBatch
+          ? latest
+          : "",
+    )
+  }
+
+  /**
+   * Open a codex: whatever is cached goes on screen at once, and only then
+   * is the site asked whether it has moved. The sheet used to block on that
+   * question — three round trips and a 4 MB parse before a single chip was
+   * tappable, every time it was reopened.
+   */
   const open = async (target: CodexMeta) => {
-    setBusy(true)
-    say("正在读取…")
+    const cached = cachedCodex(target.id)
+    if (cached) {
+      show(target, cached)
+      setBusy(false)
+      say(`${cached.title} · ${cached.entries.length} 条 · 正在检查更新…`)
+    } else {
+      setBusy(true)
+      say("首次使用，正在下载词典（约几 MB）…")
+    }
     try {
-      const loaded = await loadCodex(target, say)
-      setCodex(loaded.codex)
-      setMeta(target)
-      setDrawn(loadDrawn(loaded.codex.id))
-      // Land where the user left off, if that category still exists.
-      const remembered = loadLastPath(target.id)
-      const valid = remembered.every((_, i) =>
-        childrenAt(loaded.codex.tree, remembered.slice(0, i)).some((n) => n.name === remembered[i]),
-      )
-      setPath(valid ? remembered : [])
-      const rememberedBatch = Storage.get<string>(BATCH_KEY + target.id)
-      const latest = target.updateFilters.find((f) => f.latest)?.id ?? ""
-      setBatch(
-        typeof rememberedBatch === "string" &&
-          target.updateFilters.some((f) => f.id === rememberedBatch)
-          ? rememberedBatch
-          : spec.preferLatestBatch
-            ? latest
-            : "",
-      )
+      const fresh = await ensureFreshCodex(target, say)
+      if (!cached || fresh.updated) show(target, fresh.codex)
       say(
-        `${loaded.codex.title} · ${loaded.codex.entries.length} 条` +
-          (loaded.fromCache ? " · 本地缓存" : " · 已更新到最新"),
+        `${fresh.codex.title} · ${fresh.codex.entries.length} 条` +
+          (fresh.updated ? " · 已更新到最新" : cached ? " · 已是最新" : ""),
       )
     } catch (error) {
-      say("❌ " + (error instanceof Error ? error.message : String(error)))
+      if (!cached) say("❌ " + (error instanceof Error ? error.message : String(error)))
+      else say(`${cached.title} · ${cached.entries.length} 条 · 更新检查失败，用本地`)
     } finally {
       setBusy(false)
     }
+    // The list too, quietly: a batch the site added since the list was
+    // cached would otherwise never show up in this run of the script.
+    loadCodexList()
+      .then((list) => {
+        const refreshed = list.find((c) => c.id === target.id)
+        if (refreshed) setMeta(refreshed)
+      })
+      .catch(() => {
+        /* the cached list stands */
+      })
   }
 
   useEffect(() => {
     setLast(null)
+    // The list, like the codex, comes from memory when it can: it is only
+    // fetched when nothing has been loaded yet in this run of the script.
+    const known = cachedCodexList()
+    const found = known?.find((c) => c.id === spec.codexId)
+    if (found) {
+      void open(found)
+      return
+    }
     setCodex(null)
     setBusy(true)
     say("正在读取词典列表…")
     loadCodexList()
       .then((list) => {
-        const found = list.find((c) => c.id === spec.codexId)
-        if (!found) {
+        const target = list.find((c) => c.id === spec.codexId)
+        if (!target) {
           say("网站上找不到 " + spec.codexId)
           setBusy(false)
           return
         }
-        return open(found)
+        return open(target)
       })
       .catch((error) => {
         say("❌ " + (error instanceof Error ? error.message : String(error)))

@@ -201,16 +201,42 @@ function parseCodexList(raw: any): CodexMeta[] {
     }))
 }
 
-/** The codex list. Small, so it is fetched fresh and only cached as a fallback. */
+/*
+ * In-memory copies, for the life of the script.
+ *
+ * The picker used to rebuild itself from the network and a 4 MB disk read on
+ * every open, so reopening it after a generation meant a few seconds of grey
+ * chips. A parsed codex is kept here once loaded; the disk cache only has to
+ * survive a restart, and the network only has to be asked whether anything
+ * changed — in the background, after the sheet is already usable.
+ */
+const MEMORY: Record<string, Codex> = {}
+let METAS: CodexMeta[] | null = null
+
+/** The codex list without touching the network: memory, then Storage. */
+export function cachedCodexList(): CodexMeta[] | null {
+  if (METAS) return METAS
+  const stored = Storage.get<CodexMeta[]>(CODEX_LIST_KEY)
+  if (Array.isArray(stored) && stored.length) {
+    METAS = parseCodexList(stored)
+    return METAS
+  }
+  return null
+}
+
+/** The codex list from the site; falls back to the cached one when offline. */
 export async function loadCodexList(): Promise<CodexMeta[]> {
   try {
     const release = await currentRelease()
     const list = parseCodexList(await fetchJson(`${DATA}/releases/${release}/codexes.json`, 20))
-    if (list.length) Storage.set(CODEX_LIST_KEY, list)
+    if (list.length) {
+      Storage.set(CODEX_LIST_KEY, list)
+      METAS = list
+    }
     return list
   } catch (error) {
-    const cached = Storage.get<CodexMeta[]>(CODEX_LIST_KEY)
-    if (Array.isArray(cached) && cached.length) return cached
+    const cached = cachedCodexList()
+    if (cached) return cached
     throw error
   }
 }
@@ -304,21 +330,31 @@ export function slim(raw: any, id: string, release: string): Codex {
   }
 }
 
-export type CodexLoad = { codex: Codex; fromCache: boolean }
+/** A codex without touching the network: memory, then the disk cache. */
+export function cachedCodex(id: string): Codex | null {
+  if (MEMORY[id]) return MEMORY[id]
+  const fromDisk = readCache(id)
+  if (fromDisk) MEMORY[id] = fromDisk
+  return fromDisk
+}
+
+export type CodexLoad = { codex: Codex; fromCache: boolean; updated: boolean }
 
 /**
- * Load a codex, from disk when the site's release has not moved.
+ * Make sure the codex matches the site's current release, downloading when it
+ * does not. Returns what should be shown either way.
  *
- * The release check is one small fetch. When it fails — offline, say — a cached
- * copy is served anyway, marked as such: a slightly stale codex beats no
- * codex for a feature whose whole job is drawing something at random.
+ * Meant to run AFTER the sheet is already showing a cached copy: the release
+ * check is one small fetch, and when it fails — offline, say — the cached copy
+ * is kept. A slightly stale codex beats no codex for a feature whose job is
+ * drawing something at random.
  */
-export async function loadCodex(
+export async function ensureFreshCodex(
   meta: CodexMeta,
   onStatus?: (line: string) => void,
 ): Promise<CodexLoad> {
   const say = onStatus ?? (() => {})
-  const cached = readCache(meta.id)
+  const cached = cachedCodex(meta.id)
 
   let release: string
   try {
@@ -326,30 +362,32 @@ export async function loadCodex(
   } catch (error) {
     if (cached) {
       say("网络不可用，使用本地缓存")
-      return { codex: cached, fromCache: true }
+      return { codex: cached, fromCache: true, updated: false }
     }
     throw error
   }
 
   if (cached && cached.release === release) {
-    return { codex: cached, fromCache: true }
+    return { codex: cached, fromCache: true, updated: false }
   }
 
   const url = meta.dataUrl || `${DATA}/releases/${release}/${meta.id}.json`
-  say(cached ? "网站有更新，正在重新下载…" : "首次使用，正在下载词典（约几 MB）…")
+  say(cached ? "网站有更新，正在后台重新下载…" : "首次使用，正在下载词典（约几 MB）…")
   const raw = await fetchJson(url, 180)
   const codex = slim(raw, meta.id, release)
   if (codex.entries.length === 0) throw new Error("词典是空的")
+  MEMORY[meta.id] = codex
   try {
     writeCache(codex)
   } catch {
-    /* no cache is a slower next time, not a failure now */
+    /* no cache is a slower next restart, not a failure now */
   }
-  return { codex, fromCache: false }
+  return { codex, fromCache: false, updated: true }
 }
 
-/** Drop the on-disk copy, so the next load fetches again. */
+/** Drop both copies, so the next load fetches again. */
 export function clearCodexCache(id: string) {
+  delete MEMORY[id]
   const path = cachePath(id)
   if (FileManager.existsSync(path)) FileManager.removeSync(path)
 }
