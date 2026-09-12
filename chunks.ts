@@ -33,7 +33,7 @@
  * encryption_key never leaves the device, it is only hashed locally to open
  * the keystore.
  */
-import { activeAccount, activeId } from "./accounts"
+import { activeAccount, activeId, loadAccounts } from "./accounts"
 import { blake2b256 } from "./blake2b"
 import { inflateAuto } from "./inflate"
 import { SECRETBOX_KEY_BYTES, secretbox, secretboxOpen } from "./nacl"
@@ -1059,14 +1059,41 @@ function merged(account: Chunk[], local: Chunk[]): Chunk[] {
 }
 
 export function loadCache(): Chunk[] {
-  const account = loadAccount()
-  // Libraries saved before the device layer existed keep their unpushed
-  // chunks in the account layer. Lift them out once, so they are visible from
-  // every account straight away rather than after the next edit.
-  if (account.some((chunk) => chunk.id !== ROOT_ID && !chunk.remoteId)) {
-    return saveCache(account.concat(loadLocal().filter((c) => !account.some((a) => a.id === c.id))))
+  liftLegacy()
+  return merged(loadAccount(), loadLocal())
+}
+
+let legacyLifted = false
+
+/**
+ * Libraries saved before the device layer existed keep their unpushed chunks
+ * in the account layer — of whichever account they were made under. Lift them
+ * out of every account's cache, not only the active one: otherwise a chunk
+ * made under A stays invisible from B until A is opened once more.
+ */
+function liftLegacy(): void {
+  if (legacyLifted) return
+  legacyLifted = true
+  const local = loadLocal()
+  const known: Record<string, boolean> = {}
+  for (const chunk of local) known[chunk.id] = true
+
+  const keys = loadAccounts().map((slot) => CACHE_KEY + "." + slot.id).concat(CACHE_KEY)
+  let lifted = 0
+  for (const key of keys) {
+    const raw = Storage.get<Chunk[]>(key)
+    if (!Array.isArray(raw)) continue
+    const stray = raw.filter((c) => c.id !== ROOT_ID && !c.remoteId)
+    if (stray.length === 0) continue
+    for (const chunk of stray) {
+      if (known[chunk.id]) continue
+      known[chunk.id] = true
+      local.push(chunk)
+      lifted++
+    }
+    Storage.set(key, raw.filter((c) => c.id === ROOT_ID || c.remoteId))
   }
-  return merged(account, loadLocal())
+  if (lifted) Storage.set(LOCAL_KEY, local)
 }
 
 /**

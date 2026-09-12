@@ -543,13 +543,20 @@ check("deleting the device copy leaves the pushed account copy", C.loadCache().s
 
 // A library saved before the device layer existed keeps unpushed chunks in the
 // account layer; loading lifts them out once.
+// The lift runs once per process; this block is the first load in a fresh
+// module, so re-import to get a fresh one.
 Storage.set("nai.chunks.v1.acc-B", [
   { id: "legacy-1", containerId: "cc-legacy", label: "老的", expansion: "old", color: "#111", version: 1, isCategory: false },
+  { id: "legacy-srv", containerId: "cc-ls", remoteId: "r-ls", label: "B 服务器的", expansion: "srv", color: "#111", version: 1, isCategory: false },
 ])
-use("acc-B")
-C.loadCache()
+const C2 = await import(bundle("chunks.ts") + "?legacy")
 use("acc-A")
-check("a pre-existing unpushed chunk is lifted into the device layer", C.loadCache().some((c) => c.id === "legacy-1"))
+// Without opening B first: the lift must cover every account's cache.
+check("a pre-existing unpushed chunk is lifted into the device layer", C2.loadCache().some((c) => c.id === "legacy-1"))
+check("a pushed chunk of the other account is not", !C2.loadCache().some((c) => c.id === "legacy-srv"))
+use("acc-B")
+check("the other account still has its pushed chunk", C2.loadCache().some((c) => c.id === "legacy-srv"))
+check("and the lifted one exactly once", C2.loadCache().filter((c) => c.id === "legacy-1").length === 1)
 }
 
 console.log(failures === 0 ? "\n✓ all chunk checks passed" : `\n✗ ${failures} check(s) failed`)
