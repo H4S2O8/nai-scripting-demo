@@ -47,6 +47,8 @@ const MAGIC = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
 const SYNC_TOKEN_KEY = "nai_sync_token"
 const ENC_KEY_KEY = "nai_encryption_key"
 const CACHE_KEY = "nai.chunks.v1"
+/** Device-wide, not per account: chunks authored or imported here. */
+const LOCAL_KEY = "nai.chunks.local.v1"
 const COLLAPSE_PREFIX = "nai.chunkgroups."
 
 export type Chunk = {
@@ -1018,24 +1020,98 @@ export async function pushChunks(
 /* --------------------------------------------------------- local library */
 
 /**
- * The library is stored per account.
+ * Two layers make up what the app calls "the library".
  *
- * Not a nicety: pushing in mirror mode with another account's library loaded
- * would delete that account's chunks.
+ * The account layer is what was last pulled from one account: every chunk in
+ * it carries a remoteId. It has to be per account — pushing in mirror mode
+ * with another account's library loaded would delete that account's chunks.
+ *
+ * The device layer holds chunks that exist only here: created in the editor,
+ * or imported from a file. They have no remoteId yet. This layer used to be
+ * folded into the account layer, which meant a chunk written under one account
+ * was invisible from the next, and a pull silently discarded it. Keeping it
+ * separate lets every account see it, and lets each account push it on its
+ * own. Pushing does not move a chunk out of this layer: the copy that came
+ * back from account A is A's; the device copy is what account B still sees.
  */
 function cacheKey(): string {
   const id = activeId()
   return id ? CACHE_KEY + "." + id : CACHE_KEY
 }
 
-export function loadCache(): Chunk[] {
+function loadLocal(): Chunk[] {
+  const raw = Storage.get<Chunk[]>(LOCAL_KEY)
+  return Array.isArray(raw) ? raw : []
+}
+
+function loadAccount(): Chunk[] {
   const raw = Storage.get<Chunk[]>(cacheKey())
   return Array.isArray(raw) ? raw : []
 }
 
+/** Account layer first, then every device chunk the account does not have. */
+function merged(account: Chunk[], local: Chunk[]): Chunk[] {
+  const seen: Record<string, boolean> = {}
+  for (const chunk of account) seen[chunk.id] = true
+  const out = account.slice()
+  for (const chunk of local) if (!seen[chunk.id]) out.push(chunk)
+  return out
+}
+
+export function loadCache(): Chunk[] {
+  const account = loadAccount()
+  // Libraries saved before the device layer existed keep their unpushed
+  // chunks in the account layer. Lift them out once, so they are visible from
+  // every account straight away rather than after the next edit.
+  if (account.some((chunk) => chunk.id !== ROOT_ID && !chunk.remoteId)) {
+    return saveCache(account.concat(loadLocal().filter((c) => !account.some((a) => a.id === c.id))))
+  }
+  return merged(account, loadLocal())
+}
+
+/**
+ * Store the library after a local edit — create, update, delete, import.
+ *
+ * Whatever has a remoteId goes to the account; whatever has none is a device
+ * chunk. A device chunk that this account has already pushed shows up with a
+ * remoteId, so the device copy is refreshed from it rather than written over:
+ * an edit made under one account then reads the same everywhere. Anything no
+ * longer in the list was deleted, from both layers — the editor's delete is
+ * "remove from this device", not "remove from this account".
+ *
+ * The root category is ordering, and ordering is per account; it never enters
+ * the device layer even before the account has one on the server.
+ */
 export function saveCache(chunks: Chunk[]): Chunk[] {
+  const account: Chunk[] = []
+  const local: Chunk[] = []
+  const previous: Record<string, Chunk> = {}
+  for (const chunk of loadLocal()) previous[chunk.id] = chunk
+
+  for (const chunk of chunks) {
+    if (chunk.id === ROOT_ID || chunk.remoteId) {
+      account.push(chunk)
+      const mine = previous[chunk.id]
+      if (mine && chunk.id !== ROOT_ID) {
+        local.push({ ...chunk, containerId: mine.containerId, remoteId: undefined })
+      }
+    } else {
+      local.push(chunk)
+    }
+  }
+
+  Storage.set(cacheKey(), account)
+  Storage.set(LOCAL_KEY, local)
+  return merged(account, local)
+}
+
+/**
+ * Store what a pull returned. Only the account layer changes: the server does
+ * not know about device chunks, and a pull must not lose them.
+ */
+export function savePulled(chunks: Chunk[]): Chunk[] {
   Storage.set(cacheKey(), chunks)
-  return chunks
+  return merged(chunks, loadLocal())
 }
 
 /**

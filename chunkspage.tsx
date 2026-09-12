@@ -35,6 +35,7 @@ import {
   pullChunks,
   pushChunks,
   saveCache,
+  savePulled,
   searchChunks,
   selfTestCodec,
 } from "./chunks"
@@ -134,14 +135,14 @@ export function ChunksPage({
   const pull = () =>
     guard("从账户拉取", async () => {
       const chunks = await pullChunks(account, log)
-      onChunksChanged(saveCache(chunks))
+      onChunksChanged(savePulled(chunks))
     })
 
   const push = () =>
     guard("推送到账户（" + mode + "）", async () => {
       await pushChunks(account, chunks, mode, log)
       const refreshed = await pullChunks(account, log)
-      onChunksChanged(saveCache(refreshed))
+      onChunksChanged(savePulled(refreshed))
     })
 
   const exportFile = () =>

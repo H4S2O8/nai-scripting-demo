@@ -460,5 +460,97 @@ const minted = C.parseImport(JSON.stringify([{ id: "no-container", label: "x", e
 check("a missing containerId is minted", (minted[0].containerId ?? "").length > 0)
 }
 
+console.log("device-wide local library")
+{
+Keychain.set("nai_accounts", JSON.stringify([
+  { id: "acc-A", label: "A", token: "", syncToken: "", encryptionKey: "" },
+  { id: "acc-B", label: "B", token: "", syncToken: "", encryptionKey: "" },
+]))
+const use = (id) => Storage.set("nai.account.active", id)
+const pulledA = [
+  { id: C.ROOT_ID, containerId: C.ROOT_ID, remoteId: "r-root-A", label: "Root", expansion: "", color: "", version: 1, isCategory: true, childOrder: ["srv-A"], categoryOrder: [] },
+  { id: "srv-A", containerId: "cc-srv-A", remoteId: "r-srv-A", label: "A 上的", expansion: "solo", color: "#111", version: 1, isCategory: false },
+]
+
+use("acc-A")
+C.savePulled(pulledA)
+const created = C.saveCache(C.createChunk(C.loadCache(), { label: "本机新建", expansion: "cat ears" }))
+const mine = created.find((c) => c.label === "本机新建")
+check("a created chunk is in the library it was created in", mine != null && !mine.remoteId)
+
+use("acc-B")
+// The reported bug: a chunk created under one account was invisible from the next.
+check("the created chunk is visible from another account",
+      C.loadCache().some((c) => c.id === mine.id))
+check("the other account does not see A's server chunks",
+      !C.loadCache().some((c) => c.id === "srv-A"))
+check("under the other account it is loose, not lost",
+      C.groupChunks(C.loadCache()).some((g) => g.category === null && g.items.some((c) => c.id === mine.id)))
+
+use("acc-A")
+// A pull replaces the account layer; before the device layer existed this
+// discarded every unpushed chunk.
+C.savePulled(pulledA)
+check("a pull does not lose the unpushed chunk", C.loadCache().some((c) => c.id === mine.id))
+check("a pull still refreshes the account layer", C.loadCache().some((c) => c.id === "srv-A"))
+
+// Push then pull: the chunk comes back with a remoteId under A ...
+C.savePulled(pulledA.concat([{ ...mine, remoteId: "r-mine-A" }]))
+check("after a push the account copy carries the remoteId",
+      C.loadCache().find((c) => c.id === mine.id)?.remoteId === "r-mine-A")
+check("and appears exactly once", C.loadCache().filter((c) => c.id === mine.id).length === 1)
+use("acc-B")
+check("... and is still visible from the other account, without one",
+      C.loadCache().find((c) => c.id === mine.id)?.remoteId === undefined)
+
+// An edit made under A after the push reaches B's view of the same chunk.
+use("acc-A")
+C.saveCache(C.updateChunk(C.loadCache(), mine.id, { expansion: "fox ears" }))
+use("acc-B")
+check("an edit under one account is read by the other",
+      C.loadCache().find((c) => c.id === mine.id)?.expansion === "fox ears")
+
+// Ordering stays per account: B's root must not be invented from A's.
+check("the root is never shared between accounts", !C.loadCache().some((c) => c.id === C.ROOT_ID))
+C.saveCache(C.createChunk(C.loadCache(), { label: "B 的", expansion: "1boy" }))
+use("acc-A")
+check("a root made under B stays out of A", C.loadCache().find((c) => c.id === C.ROOT_ID)?.remoteId === "r-root-A")
+check("B's chunk is visible from A", C.loadCache().some((c) => c.label === "B 的"))
+
+// Import goes device-wide too: that is how a character pack reaches every account.
+use("acc-A")
+const pack = C.mergeImport(C.loadCache(), [
+  { id: "cat-pack", containerId: "cc-pack", label: "角色包", expansion: "", color: "#333", version: 1, isCategory: true, childOrder: ["pack-1"], categoryOrder: [] },
+  { id: "pack-1", containerId: "cc-pack-1", label: "娃", expansion: "twintails", color: "#333", version: 1, isCategory: false },
+])
+C.saveCache(pack.chunks)
+use("acc-B")
+check("an imported pack is visible from another account, grouped",
+      C.groupChunks(C.loadCache()).some((g) => g.category?.id === "cat-pack" && g.items.length === 1))
+
+// Delete is "remove from this device".
+use("acc-A")
+const bs = C.loadCache().find((c) => c.label === "B 的")
+C.saveCache(C.deleteChunkLocal(C.loadCache(), bs.id))
+use("acc-B")
+check("a delete under one account removes it everywhere", !C.loadCache().some((c) => c.id === bs.id))
+// ... but not from an account that already holds it on the server: that copy
+// would come back on the next pull anyway, and a mirror push is the way to
+// delete it there.
+C.saveCache(C.deleteChunkLocal(C.loadCache(), mine.id))
+use("acc-A")
+check("deleting the device copy leaves the pushed account copy", C.loadCache().some((c) => c.id === mine.id))
+
+// A library saved before the device layer existed keeps unpushed chunks in the
+// account layer; loading lifts them out once.
+Storage.set("nai.chunks.v1.acc-B", [
+  { id: "legacy-1", containerId: "cc-legacy", label: "老的", expansion: "old", color: "#111", version: 1, isCategory: false },
+])
+use("acc-B")
+C.loadCache()
+use("acc-A")
+check("a pre-existing unpushed chunk is lifted into the device layer", C.loadCache().some((c) => c.id === "legacy-1"))
+}
+
 console.log(failures === 0 ? "\n✓ all chunk checks passed" : `\n✗ ${failures} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)
