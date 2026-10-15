@@ -74,7 +74,7 @@ console.log("prompt composition")
   // Order matters to the model, so the alpha request has to lead and the
   // subject has to precede the boilerplate.
   check("the transparency tag leads", prompt.startsWith("2.1::transparent background::"))
-  check("the subject comes before the suffix", prompt.indexOf("knight") < prompt.indexOf("full body"))
+  check("the subject comes before the suffix", prompt.indexOf("knight") < prompt.indexOf("isolated"))
   check("no doubled commas", !/,\s*,/.test(prompt))
   check("no leading or trailing comma", !/^,|,$/.test(prompt.trim()))
 }
