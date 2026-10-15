@@ -127,6 +127,17 @@ console.log("paid requests")
   const why = P.explainEmpty(big)
   check("the explanation names the shortfall", /broke/.test(why) && /Anlas/.test(why))
 }
+{
+  // A subscribed account spends its Anlas before an unsubscribed one, even a richer one.
+  const big = { ...PARAMS, width: 1216, height: 1216 }
+  const paper = (anlas) => ({ active: false, tier: 0, tierName: "Paper", anlas, opusPercent: undefined })
+  const P = await load({ NOVELAI_TOKENS: "free=pst-1,sub=pst-2" })
+  seed(P, [paper(20000), opus(100, 500)])
+  check("a subscribed account is preferred for paid requests", P.rank(big)[0].account.label === "sub")
+  const Q = await load({ NOVELAI_TOKENS: "free=pst-1,sub=pst-2" })
+  seed(Q, [paper(20000), opus(100, 1)])
+  check("an unsubscribed account takes over once the subscribed one cannot pay", Q.rank(big)[0].account.label === "free")
+}
 
 console.log("exclusions")
 {
@@ -136,11 +147,22 @@ console.log("exclusions")
   list[1].lastError = "401 令牌无效"
   const ranked = P.rank(PARAMS)
   check("only the healthy account is ranked", ranked.length === 1 && ranked[0].account.label === "ok")
+  const paid = P.rank({ ...PARAMS, width: 1024, height: 1536 })
+  check("a broke inactive account is not ranked for a paid request", !paid.some((c) => c.account.label === "off"))
   const why = P.explainEmpty({ ...PARAMS, width: 4096, height: 4096 })
   check("cooldown is explained with a countdown", /cold.*冷却中/s.test(why))
   check("an inactive subscription is explained", /off.*未激活/s.test(why))
   check("a failed state fetch is explained", /unknown.*状态获取失败/s.test(why))
   check("the explanation never contains a token", !/pst-/.test(why))
+}
+
+console.log("expired subscription with Anlas")
+{
+  const P = await load({ NOVELAI_TOKENS: "expired=pst-1" })
+  seed(P, [{ active: false, tier: 0, tierName: "Paper", anlas: 35000, opusPercent: 75 }])
+  const ranked = P.rank(PARAMS)
+  check("it is ranked", ranked.length === 1)
+  check("it is never free", ranked[0].free === false && ranked[0].cost > 0)
 }
 
 console.log("leases and failover")

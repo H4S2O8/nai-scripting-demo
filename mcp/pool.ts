@@ -148,23 +148,29 @@ export function rank(params: GenerateParams, now = Date.now()): Candidate[] {
   for (const account of pool()) {
     if (account.cooldownUntil > now) continue
     if (!account.state) continue
-    if (!account.state.active) continue
+    // An expired subscription is not disqualifying: purchased Anlas outlive
+    // it. isOpus() already requires an active sub, so such an account is only
+    // ever quoted as paid, and the Anlas check below decides.
 
     const quote = estimateAnlas(params, account.state)
     const anlas = account.state.anlas ?? 0
     const percent = account.state.opusPercent ?? 0
 
+    // Bands, highest first: free on this account, then paid on an active
+    // subscription, then paid on anything else. Each band sits wholly above
+    // the next, so a band only falls through once it has no one left.
     let score: number
     if (quote.free) {
       // Free on this account: spread across whoever has the most allowance
       // left, so no single account is exhausted while others sit idle.
       if (!isOpus(account.state)) continue
-      score = 10_000 + percent
+      score = 30_000 + percent
     } else {
-      // Paid: it has to be able to afford the whole batch, and among those
-      // that can, the richest keeps the others in reserve.
+      // Paid: it has to be able to afford the whole batch. A subscribed
+      // account spends first, so the unsubscribed ones are kept in reserve;
+      // within a band, the richest goes first.
       if (anlas < quote.total) continue
-      score = Math.min(9_999, anlas)
+      score = (account.state.active ? 20_000 : 0) + Math.min(9_999, anlas)
     }
 
     // Tie-break on load, then on how much each has already served, so equal
@@ -191,11 +197,11 @@ export function explainEmpty(params: GenerateParams, now = Date.now()): string {
       return `${name}：冷却中 ${seconds}s — ${account.lastError || "上次失败"}`
     }
     if (!account.state) return `${name}：状态获取失败 — ${account.stateError || "未知"}`
-    if (!account.state.active) return `${name}：订阅未激活`
     const quote = estimateAnlas(params, account.state)
     if (quote.free) return `${name}：可用（应当被选中）`
     const anlas = account.state.anlas ?? 0
-    return `${name}：需要 ${quote.total} Anlas，只有 ${anlas}`
+    const inactive = account.state.active ? "" : "订阅未激活，只能用 Anlas；"
+    return `${name}：${inactive}需要 ${quote.total} Anlas，只有 ${anlas}`
   })
   return "没有可用账户：\n  " + reasons.join("\n  ")
 }
