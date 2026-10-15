@@ -13,7 +13,8 @@
  *   NOVELAI_TOKENS     the account pool: several pst- tokens separated by
  *                      commas or newlines, each optionally "label=token"
  *   NOVELAI_TOKEN      a single pst- token; still works, folded into the pool
- *   MCP_AUTH_TOKEN     required, the shared secret clients must present
+ *   MCP_AUTH_TOKEN     required, the shared secret clients must present; also
+ *                      the OAuth client_secret and signing key (see oauth.ts)
  *   PORT               default 8787
  *   HOST               default 0.0.0.0
  *   NOVELAI_PUBLIC_URL optional, e.g. https://nai.example.com — enables image links
@@ -27,6 +28,7 @@ import { basename, join } from "node:path"
 import { timingSafeEqual } from "node:crypto"
 
 import { buildServer } from "./tools"
+import { createOAuth } from "./oauth"
 
 const AUTH = (process.env.MCP_AUTH_TOKEN ?? "").trim()
 if (!AUTH) {
@@ -47,6 +49,10 @@ if (!(process.env.NOVELAI_TOKEN ?? "").trim() && !(process.env.NOVELAI_TOKENS ??
   console.warn("NOVELAI_TOKEN / NOVELAI_TOKENS 都没设置：服务照常启动，但生图会失败。")
 }
 
+// OAuth for clients that will not send a static header (Gemini). The static
+// MCP_AUTH_TOKEN keeps working unchanged alongside it.
+const oauth = createOAuth(AUTH)
+
 const PORT = Number(process.env.PORT ?? 8787)
 const HOST = process.env.HOST ?? "0.0.0.0"
 const OUTPUT_DIR =
@@ -59,13 +65,15 @@ function authorized(req: IncomingMessage): boolean {
   const presented = header.startsWith("Bearer ") ? header.slice(7).trim() : ""
   const a = Buffer.from(presented)
   const b = Buffer.from(AUTH)
-  return a.length === b.length && timingSafeEqual(a, b)
+  if (a.length === b.length && timingSafeEqual(a, b)) return true
+  return oauth.verifyAccess(presented)
 }
 
-function deny(res: ServerResponse) {
+function deny(req: IncomingMessage, res: ServerResponse) {
+  // resource_metadata is what lets an OAuth client discover where to log in.
   res.writeHead(401, {
     "content-type": "application/json",
-    "www-authenticate": 'Bearer realm="novelai-mcp"',
+    "www-authenticate": oauth.challenge(req),
   })
   res.end(JSON.stringify({ error: "unauthorized" }))
 }
@@ -123,8 +131,10 @@ const http = createServer((req, res) => {
       return
     }
 
+    if (await oauth.handle(req, res, url)) return
+
     if (!authorized(req)) {
-      deny(res)
+      deny(req, res)
       return
     }
 

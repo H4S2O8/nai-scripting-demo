@@ -245,6 +245,90 @@ console.log("http transport")
   )
   check("unknown paths 404", (await fetch(base + "/nope", authed)).status === 404)
 
+  // OAuth, for clients (Gemini) that will not send a static header.
+  const challenge = (await fetch(base + "/mcp", { method: "POST" })).headers.get("www-authenticate") ?? ""
+  check("401 points at resource metadata", /resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource"/.test(challenge), challenge)
+  const prm = await (await fetch(base + "/.well-known/oauth-protected-resource")).json()
+  check("protected resource metadata names the auth server", prm.resource === base + "/mcp" && prm.authorization_servers[0] === base)
+  const asm = await (await fetch(base + "/.well-known/oauth-authorization-server")).json()
+  check("auth server metadata lists endpoints", asm.token_endpoint === base + "/oauth/token" && asm.code_challenge_methods_supported.includes("S256"))
+
+  const { createHash, randomBytes } = await import("node:crypto")
+  const verifier = randomBytes(32).toString("base64url")
+  const pkce = createHash("sha256").update(verifier).digest("base64url")
+  const REDIRECT = "https://client.example/callback"
+  const codeFrom = (r) => new URL(r.headers.get("location")).searchParams.get("code")
+  const tokenReq = (form, headers = {}) =>
+    fetch(base + "/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+      body: new URLSearchParams(form),
+    })
+
+  // Static client: client_id novelai-mcp, client_secret = MCP_AUTH_TOKEN.
+  const authQ = (cid) =>
+    `${base}/oauth/authorize?response_type=code&client_id=${encodeURIComponent(cid)}&redirect_uri=${encodeURIComponent(REDIRECT)}&state=s1&code_challenge=${pkce}&code_challenge_method=S256`
+  const sAuth = await fetch(authQ("novelai-mcp"), { redirect: "manual" })
+  const sLoc = new URL(sAuth.headers.get("location") ?? "http://x/")
+  check("static client is redirected with a code and state", sAuth.status === 302 && sLoc.searchParams.get("state") === "s1" && !!codeFrom(sAuth))
+  const sCode = codeFrom(sAuth)
+  const codeForm = { grant_type: "authorization_code", code: sCode, redirect_uri: REDIRECT, code_verifier: verifier, client_id: "novelai-mcp" }
+  check("wrong client_secret is refused", (await tokenReq({ ...codeForm, client_secret: "nope" })).status === 401)
+  const basic = "Basic " + Buffer.from("novelai-mcp:" + SECRET).toString("base64")
+  const sTok = await tokenReq({ ...codeForm, client_id: "" }, { authorization: basic })
+  const sJson = await sTok.json()
+  check("code exchanges for tokens with client_secret_basic", sTok.status === 200 && sJson.access_token?.startsWith("nmo_"), JSON.stringify(sJson))
+  check("a code works only once", (await tokenReq({ ...codeForm, client_secret: SECRET })).status === 400)
+  check(
+    "OAuth access token opens /mcp",
+    (await fetch(base + "/mcp", { method: "POST", headers: { authorization: "Bearer " + sJson.access_token } })).status !== 401,
+  )
+  check(
+    "a refresh token is not an access token",
+    (await fetch(base + "/mcp", { method: "POST", headers: { authorization: "Bearer " + sJson.refresh_token } })).status === 401,
+  )
+  const tampered = sJson.access_token.slice(0, -2) + (sJson.access_token.endsWith("AA") ? "BB" : "AA")
+  check("a tampered token is refused", (await fetch(base + "/mcp", { method: "POST", headers: { authorization: "Bearer " + tampered } })).status === 401)
+  const rTok = await tokenReq({ grant_type: "refresh_token", refresh_token: sJson.refresh_token, client_id: "novelai-mcp", client_secret: SECRET })
+  check("refresh grant issues a new access token", rTok.status === 200 && (await rTok.json()).access_token?.startsWith("nmo_"))
+  check("an unknown client is refused at authorize", (await fetch(authQ("someone"), { redirect: "manual" })).status === 400)
+  const evil = await fetch(authQ("novelai-mcp").replace(encodeURIComponent(REDIRECT), encodeURIComponent("javascript:alert(1)")), { redirect: "manual" })
+  check("a non-https redirect is refused, not followed", evil.status === 400)
+
+  // Dynamic client: registered, public, must type the key on the consent page.
+  const reg = await fetch(base + "/oauth/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Test", redirect_uris: [REDIRECT] }),
+  })
+  const regJson = await reg.json()
+  check("dynamic registration returns a client_id", reg.status === 201 && !!regJson.client_id)
+  const consent = await fetch(authQ(regJson.client_id), { redirect: "manual" })
+  check("dynamic client gets a consent page, not a code", consent.status === 200 && /type="password"/.test(await consent.text()))
+  const consentForm = (key) => {
+    const f = new URL(authQ(regJson.client_id)).searchParams
+    f.set("key", key)
+    return fetch(base + "/oauth/authorize", { method: "POST", body: f, redirect: "manual" })
+  }
+  check("wrong key on the consent page is refused", (await consentForm("wrong")).status === 401)
+  const dAuth = await consentForm(SECRET)
+  check("right key on the consent page redirects with a code", dAuth.status === 302 && !!codeFrom(dAuth))
+  const dTok = await tokenReq({ grant_type: "authorization_code", code: codeFrom(dAuth), redirect_uri: REDIRECT, code_verifier: "wrong-verifier-wrong-verifier-wrong-verifier", client_id: regJson.client_id })
+  check("wrong PKCE verifier is refused", dTok.status === 400)
+  const oauthClient = new Client({ name: "test-oauth", version: "1.0.0" })
+  {
+    const again = await consentForm(SECRET)
+    const t = await (await tokenReq({ grant_type: "authorization_code", code: codeFrom(again), redirect_uri: REDIRECT, code_verifier: verifier, client_id: regJson.client_id })).json()
+    await oauthClient.connect(
+      new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+        requestInit: { headers: { authorization: "Bearer " + t.access_token } },
+      }),
+    )
+    const tools = (await oauthClient.listTools()).tools
+    check("an MCP client works with an OAuth token", tools.length > 0)
+    await oauthClient.close()
+  }
+
   const httpClient = new Client({ name: "test-http", version: "1.0.0" })
   await httpClient.connect(
     new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
