@@ -1020,125 +1020,209 @@ export async function pushChunks(
 /* --------------------------------------------------------- local library */
 
 /**
- * Two layers make up what the app calls "the library".
+ * One library per device, the union of every account it has pulled from.
  *
- * The account layer is what was last pulled from one account: every chunk in
- * it carries a remoteId. It has to be per account — pushing in mirror mode
- * with another account's library loaded would delete that account's chunks.
+ * It used to be per account, with only unpushed chunks shared. Adding a second
+ * account then showed an empty library: everything already synced belonged to
+ * the first account and stayed with it. A chunk is a prompt fragment; which
+ * account stores it is an implementation detail of sync, not something the
+ * picker should change with.
  *
- * The device layer holds chunks that exist only here: created in the editor,
- * or imported from a file. They have no remoteId yet. This layer used to be
- * folded into the account layer, which meant a chunk written under one account
- * was invisible from the next, and a pull silently discarded it. Keeping it
- * separate lets every account see it, and lets each account push it on its
- * own. Pushing does not move a chunk out of this layer: the copy that came
- * back from account A is A's; the device copy is what account B still sees.
+ * So the library holds no server identity (remoteId). A push lists the target
+ * account fresh and takes ids from there (planSync), so it never needed the
+ * local copy's. What each account last returned is still kept per account as
+ * a snapshot, which is only read to build the library on first upgrade.
+ *
+ * Conflicts — the same chunk id with different content on two sides:
+ *   - an edit made here and not yet pushed is never overwritten by a pull;
+ *   - otherwise the "primary" account's copy wins, when one is chosen;
+ *   - otherwise the higher version wins, and a tie keeps what is here.
+ *
+ * A delete is remembered (a tombstone), so a pull does not bring the chunk
+ * straight back. It is still on the account; an import with the same id, or a
+ * mirror push, is how to change that.
  */
-function cacheKey(): string {
-  const id = activeId()
+const LIBRARY_KEY = "nai.chunks.library.v2"
+const DELETED_KEY = "nai.chunks.deleted.v1"
+const PRIMARY_KEY = "nai.chunks.primary"
+/** Ids edited here since they last matched an account's copy. */
+const EDITED_KEY = "nai.chunks.edited.v1"
+
+function snapshotKey(id = activeId()): string {
   return id ? CACHE_KEY + "." + id : CACHE_KEY
 }
 
-function loadLocal(): Chunk[] {
-  const raw = Storage.get<Chunk[]>(LOCAL_KEY)
+function readList(key: string): Chunk[] {
+  const raw = Storage.get<Chunk[]>(key)
   return Array.isArray(raw) ? raw : []
 }
 
-function loadAccount(): Chunk[] {
-  const raw = Storage.get<Chunk[]>(cacheKey())
-  return Array.isArray(raw) ? raw : []
+function readIds(key: string): string[] {
+  const raw = Storage.get<string[]>(key)
+  return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : []
 }
 
-/** Account layer first, then every device chunk the account does not have. */
-function merged(account: Chunk[], local: Chunk[]): Chunk[] {
-  const seen: Record<string, boolean> = {}
-  for (const chunk of account) seen[chunk.id] = true
-  const out = account.slice()
-  for (const chunk of local) if (!seen[chunk.id]) out.push(chunk)
-  return out
+function sameContent(a: Chunk, b: Chunk): boolean {
+  return a.label === b.label && a.expansion === b.expansion && a.color === b.color
+}
+
+/** The account whose copy wins a conflict; "" when none is chosen. */
+export function primaryAccountId(): string {
+  const id = Storage.get<string>(PRIMARY_KEY) ?? ""
+  return id && loadAccounts().some((slot) => slot.id === id) ? id : ""
+}
+
+export function setPrimaryAccountId(id: string): void {
+  Storage.set(PRIMARY_KEY, id)
+}
+
+function withoutIdentity(chunk: Chunk): Chunk {
+  const { remoteId: _drop, ...rest } = chunk
+  return rest
+}
+
+/**
+ * Fold one account's chunks into the library.
+ *
+ * `authoritative` makes the incoming copy win conflicts; otherwise it wins
+ * only with a strictly higher version. Ids in `edited` always keep the local
+ * copy. Category ordering is merged rather than replaced, so a chunk listed by
+ * either side keeps a place. Tombstoned ids are skipped.
+ */
+export function foldInto(
+  library: Chunk[],
+  incoming: Chunk[],
+  authoritative: boolean,
+  deleted: string[] = [],
+  edited: string[] = [],
+): Chunk[] {
+  const gone: Record<string, boolean> = {}
+  for (const id of deleted) gone[id] = true
+  const mine: Record<string, boolean> = {}
+  for (const id of edited) mine[id] = true
+  const out = library.slice()
+  const index: Record<string, number> = {}
+  out.forEach((chunk, i) => {
+    index[chunk.id] = i
+  })
+
+  for (const raw of incoming) {
+    if (gone[raw.id]) continue
+    const chunk = withoutIdentity(raw)
+    const at = index[chunk.id]
+    if (at === undefined) {
+      index[chunk.id] = out.length
+      out.push(chunk)
+      continue
+    }
+    const current = out[at]
+    const wins =
+      !mine[chunk.id] && (authoritative || (chunk.version ?? 1) > (current.version ?? 1))
+    const base = wins ? chunk : current
+    const other = wins ? current : chunk
+    out[at] = base.isCategory
+      ? {
+          ...base,
+          childOrder: mergeOrder(base.childOrder, other.childOrder),
+          categoryOrder: mergeOrder(base.categoryOrder, other.categoryOrder),
+        }
+      : base
+  }
+
+  // Tombstoned ids may linger in ordering lists from the incoming categories.
+  if (deleted.length === 0) return out
+  return out.map((chunk) =>
+    chunk.isCategory
+      ? {
+          ...chunk,
+          childOrder: (chunk.childOrder ?? []).filter((id) => !gone[id]),
+          categoryOrder: (chunk.categoryOrder ?? []).filter((id) => !gone[id]),
+        }
+      : chunk,
+  )
+}
+
+/**
+ * First run after the upgrade: build the library from what is already on the
+ * device — the old device layer and every account's cache, primary (or else
+ * active) account first so its copy wins.
+ */
+function buildLibrary(): Chunk[] {
+  const slots = loadAccounts().map((slot) => slot.id)
+  const lead = primaryAccountId() || activeId()
+  const order = (lead ? [lead] : []).concat(slots.filter((id) => id !== lead))
+  let library: Chunk[] = []
+  for (const id of order) library = foldInto(library, readList(snapshotKey(id)), false)
+  library = foldInto(library, readList(CACHE_KEY), false)
+  const device = readList(LOCAL_KEY)
+  library = foldInto(library, device, false)
+  // The old device layer held what no account had yet: unpushed, so edited.
+  const synced: Record<string, boolean> = {}
+  for (const id of slots) for (const chunk of readList(snapshotKey(id))) synced[chunk.id] = true
+  Storage.set(EDITED_KEY, device.filter((c) => !c.isCategory && !synced[c.id]).map((c) => c.id))
+  return library
 }
 
 export function loadCache(): Chunk[] {
-  liftLegacy()
-  return merged(loadAccount(), loadLocal())
-}
-
-let legacyLifted = false
-
-/**
- * Libraries saved before the device layer existed keep their unpushed chunks
- * in the account layer — of whichever account they were made under. Lift them
- * out of every account's cache, not only the active one: otherwise a chunk
- * made under A stays invisible from B until A is opened once more.
- */
-function liftLegacy(): void {
-  if (legacyLifted) return
-  legacyLifted = true
-  const local = loadLocal()
-  const known: Record<string, boolean> = {}
-  for (const chunk of local) known[chunk.id] = true
-
-  const keys = loadAccounts().map((slot) => CACHE_KEY + "." + slot.id).concat(CACHE_KEY)
-  let lifted = 0
-  for (const key of keys) {
-    const raw = Storage.get<Chunk[]>(key)
-    if (!Array.isArray(raw)) continue
-    const stray = raw.filter((c) => c.id !== ROOT_ID && !c.remoteId)
-    if (stray.length === 0) continue
-    for (const chunk of stray) {
-      if (known[chunk.id]) continue
-      known[chunk.id] = true
-      local.push(chunk)
-      lifted++
-    }
-    Storage.set(key, raw.filter((c) => c.id === ROOT_ID || c.remoteId))
-  }
-  if (lifted) Storage.set(LOCAL_KEY, local)
+  const raw = Storage.get<Chunk[]>(LIBRARY_KEY)
+  if (Array.isArray(raw)) return raw
+  const built = buildLibrary()
+  Storage.set(LIBRARY_KEY, built)
+  return built
 }
 
 /**
  * Store the library after a local edit — create, update, delete, import.
- *
- * Whatever has a remoteId goes to the account; whatever has none is a device
- * chunk. A device chunk that this account has already pushed shows up with a
- * remoteId, so the device copy is refreshed from it rather than written over:
- * an edit made under one account then reads the same everywhere. Anything no
- * longer in the list was deleted, from both layers — the editor's delete is
- * "remove from this device", not "remove from this account".
- *
- * The root category is ordering, and ordering is per account; it never enters
- * the device layer even before the account has one on the server.
+ * Anything that was there and no longer is gets a tombstone; anything present
+ * loses one, so re-importing a deleted chunk brings it back for good. Anything
+ * new or changed is marked edited, so a pull cannot overwrite it.
  */
 export function saveCache(chunks: Chunk[]): Chunk[] {
-  const account: Chunk[] = []
-  const local: Chunk[] = []
-  const previous: Record<string, Chunk> = {}
-  for (const chunk of loadLocal()) previous[chunk.id] = chunk
+  const next = chunks.map(withoutIdentity)
+  const present: Record<string, boolean> = {}
+  for (const chunk of next) present[chunk.id] = true
+  const before: Record<string, Chunk> = {}
+  for (const chunk of loadCache()) before[chunk.id] = chunk
 
-  for (const chunk of chunks) {
-    if (chunk.id === ROOT_ID || chunk.remoteId) {
-      account.push(chunk)
-      const mine = previous[chunk.id]
-      if (mine && chunk.id !== ROOT_ID) {
-        local.push({ ...chunk, containerId: mine.containerId, remoteId: undefined })
-      }
-    } else {
-      local.push(chunk)
-    }
+  const deleted = readIds(DELETED_KEY).filter((id) => !present[id])
+  for (const id of Object.keys(before)) {
+    if (!present[id] && id !== ROOT_ID && deleted.indexOf(id) === -1) deleted.push(id)
   }
-
-  Storage.set(cacheKey(), account)
-  Storage.set(LOCAL_KEY, local)
-  return merged(account, local)
+  const edited = readIds(EDITED_KEY).filter((id) => present[id])
+  for (const chunk of next) {
+    if (chunk.isCategory || edited.indexOf(chunk.id) !== -1) continue
+    const old = before[chunk.id]
+    if (!old || !sameContent(old, chunk)) edited.push(chunk.id)
+  }
+  Storage.set(DELETED_KEY, deleted)
+  Storage.set(EDITED_KEY, edited)
+  Storage.set(LIBRARY_KEY, next)
+  return next
 }
 
 /**
- * Store what a pull returned. Only the account layer changes: the server does
- * not know about device chunks, and a pull must not lose them.
+ * Store what a pull from the active account returned: keep it as that
+ * account's snapshot, and fold it into the device library.
  */
 export function savePulled(chunks: Chunk[]): Chunk[] {
-  Storage.set(cacheKey(), chunks)
-  return merged(chunks, loadLocal())
+  Storage.set(snapshotKey(), chunks)
+  const library = loadCache()
+  const authoritative = primaryAccountId() === activeId() && activeId() !== ""
+  const edited = readIds(EDITED_KEY)
+  const next = foldInto(library, chunks, authoritative, readIds(DELETED_KEY), edited)
+
+  // An edit is settled once an account holds exactly it — which is what a
+  // push followed by its refreshing pull produces.
+  const local: Record<string, Chunk> = {}
+  for (const chunk of library) local[chunk.id] = chunk
+  const settled: Record<string, boolean> = {}
+  for (const chunk of chunks) {
+    const here = local[chunk.id]
+    if (here && sameContent(here, chunk)) settled[chunk.id] = true
+  }
+  Storage.set(EDITED_KEY, edited.filter((id) => !settled[id]))
+  Storage.set(LIBRARY_KEY, next)
+  return next
 }
 
 /**

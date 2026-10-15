@@ -124,7 +124,7 @@ console.log("add / switch / edit / remove")
   check("removing the last one clears active", A.removeAccount(remaining, remaining[0].id).length === 0 && A.activeId() === "")
 }
 
-console.log("chunk library is scoped per account")
+console.log("chunk library is shared across accounts")
 {
   reset()
   const A = await import(accountsPath + "?4")
@@ -134,24 +134,16 @@ console.log("chunk library is scoped per account")
 
   A.setActiveId(slots[0].id)
   C.savePulled([{ id: "a1", containerId: "c", remoteId: "r-a1", label: "A only", expansion: "x", color: "#333", version: 1, isCategory: false }])
-  check("account A sees its own library", C.loadCache().length === 1)
+  check("account A sees what it pulled", C.loadCache().length === 1)
 
   A.setActiveId(slots[1].id)
-  // Without this, a mirror push would delete the other account's chunks.
-  check("account B starts empty", C.loadCache().length === 0)
+  // A chunk is a prompt fragment, not the account's: switching keeps it.
+  check("account B still sees it", C.loadCache().some((c) => c.id === "a1"))
   C.savePulled([{ id: "b1", containerId: "c", remoteId: "r-b1", label: "B only", expansion: "y", color: "#333", version: 1, isCategory: false }])
-  check("B saves its own", C.loadCache()[0].label === "B only")
+  check("B's pull adds to it", C.loadCache().length === 2)
 
   A.setActiveId(slots[0].id)
-  check("switching back restores A's library", C.loadCache()[0].label === "A only")
-
-  // What is authored on the device, as opposed to pulled from an account, is
-  // not the account's and must not be locked to it.
-  C.saveCache(C.loadCache().concat([{ id: "d1", containerId: "c", label: "device", expansion: "z", color: "#333", version: 1, isCategory: false }]))
-  A.setActiveId(slots[1].id)
-  check("a device chunk follows the user across accounts", C.loadCache().some((c) => c.id === "d1"))
-  check("without dragging the other account's chunks along", !C.loadCache().some((c) => c.id === "a1"))
-  A.setActiveId(slots[0].id)
+  check("switching back shows both", C.loadCache().length === 2)
 
   check("A's sync credentials are read from the slot", C.loadSyncToken() === "")
   A.updateAccount(A.loadAccounts(), slots[0].id, { syncToken: "tok-a", encryptionKey: "key-a" })

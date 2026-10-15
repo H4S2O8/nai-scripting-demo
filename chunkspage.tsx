@@ -34,12 +34,15 @@ import {
   updateChunk,
   pullChunks,
   pushChunks,
+  primaryAccountId,
   saveCache,
+  setPrimaryAccountId,
   savePulled,
   searchChunks,
   selfTestCodec,
 } from "./chunks"
 import { outputDir } from "./nai"
+import { activeAccount, loadAccounts } from "./accounts"
 import { ChunkGrid } from "./chunkgrid"
 import { ChunkEditorSheet } from "./chunkeditor"
 import { chunkState } from "./prompttokens"
@@ -88,6 +91,8 @@ export function ChunksPage({
   const [confirmPush, setConfirmPush] = useState(false)
   // null = closed, "new" = create, otherwise the id being edited.
   const [editorFor, setEditorFor] = useState<string | null>(null)
+  const [primaryId, setPrimaryId] = useState("")
+  const [current, setCurrent] = useState<{ id: string; label: string } | null>(null)
 
   // Read once. A useState initializer function is not a form this platform
   // documents, and re-reading Storage on every render would parse the whole
@@ -97,7 +102,22 @@ export function ChunksPage({
   useEffect(() => {
     setSyncToken(loadSyncToken())
     setEncKey(loadEncryptionKey())
+    setPrimaryId(primaryAccountId())
+    const slot = activeAccount()
+    setCurrent(slot ? { id: slot.id, label: slot.label } : null)
   }, [accountKey])
+
+  const primaryLabel = primaryId
+    ? loadAccounts().find((slot) => slot.id === primaryId)?.label ?? ""
+    : ""
+  const isPrimary = current != null && current.id === primaryId
+  const togglePrimary = () => {
+    if (!current) return
+    const next = isPrimary ? "" : current.id
+    setPrimaryAccountId(next)
+    setPrimaryId(next)
+    log(next ? `✔ 「${current.label}」设为通用词库账户：拉取时它的版本优先。` : "✔ 已取消通用词库账户。")
+  }
 
   const log = (line: string) => setLines((prev) => [...prev, line].slice(-200))
 
@@ -299,8 +319,8 @@ export function ChunksPage({
               />
             </HStack>
             <Text font={11} foregroundStyle="tertiaryLabel">
-              词库用的是当前账户的 auth_token 和 encryption_key，在账号页里填。生图用的
-              pst- 令牌在这些接口上会被直接拒绝。切换账户时词库会跟着一起换。
+              同步用的是当前账户的 auth_token 和 encryption_key，在账号页里填。生图用的
+              pst- 令牌在这些接口上会被直接拒绝。本地库是全机共用的一份，切换账户不会换。
             </Text>
           </Card>
 
@@ -374,7 +394,23 @@ export function ChunksPage({
                 disabled={busy}
               />
               <Spacer />
+              <Button
+                title={isPrimary ? "取消通用" : "设为通用"}
+                systemImage={isPrimary ? "star.fill" : "star"}
+                action={togglePrimary}
+                buttonStyle="bordered"
+                controlSize="small"
+                tint={ACCENT}
+                disabled={busy || current == null}
+              />
             </HStack>
+            <Text font={11} foregroundStyle="tertiaryLabel">
+              拉取会把账户里的 chunk 并进本地库，不会丢掉其他账户拉来的。
+              {primaryLabel
+                ? `通用词库账户：${primaryLabel}，同一个 chunk 内容不同时以它为准。`
+                : "还没有通用词库账户：同一个 chunk 内容不同时，保留版本号更高的。"}
+              本机改过还没推送的 chunk 拉取时不会被覆盖。
+            </Text>
             <FieldLabel text="推送模式" />
             <FlowLayout spacing={8}>
               {MODES.map((item) => (
