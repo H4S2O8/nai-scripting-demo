@@ -206,6 +206,9 @@ async function generateOne(params: GenerateParams, seed: number, authToken: stri
   const payload = buildPayload(params, seed)
   const actualSeed = (payload.parameters as { seed: number }).seed
 
+  // Stage timings go to the journal so a slow generation can be blamed on the
+  // right leg: NovelAI's queue, the download, or the R2 upload.
+  const t0 = Date.now()
   const response = await fetch(`${IMAGE_HOST}/ai/generate-image`, {
     method: "POST",
     headers: {
@@ -216,9 +219,11 @@ async function generateOne(params: GenerateParams, seed: number, authToken: stri
     body: JSON.stringify(payload),
   })
   if (!response.ok) throw new Error(await readError(response))
+  const tHeaders = Date.now()
 
   const body = Buffer.from(await response.arrayBuffer())
   if (body.length === 0) throw new Error("响应体为空")
+  const tBody = Date.now()
 
   // A ZIP normally, but some gateways hand back the PNG directly.
   const png =
@@ -241,6 +246,11 @@ async function generateOne(params: GenerateParams, seed: number, authToken: stri
   // local copy and /images/ still work.
   const config = r2Config()
   const remote = config ? await uploadToR2(config, path, png) : null
+  const tDone = Date.now()
+  console.error(
+    `[timing] nai_ttfb=${tHeaders - t0}ms download=${tBody - tHeaders}ms ` +
+      `(${(body.length / 1024).toFixed(0)}KB) r2=${tDone - tBody}ms total=${tDone - t0}ms`,
+  )
 
   return { path, seed: actualSeed, bytes: png.length, png, remote }
 }
@@ -260,8 +270,11 @@ async function generateWithFailover(params: GenerateParams, seed: number) {
   let lastError: unknown = new Error("没有可用账户")
   for (let attempt = 0; attempt < attempts; attempt++) {
     let lease: Lease
+    const tAcquire = Date.now()
     try {
       lease = await acquire(params)
+      const spent = Date.now() - tAcquire
+      if (spent > 50) console.error(`[timing] acquire=${spent}ms (account refresh)`)
     } catch (error) {
       // acquire() only fails when nothing can serve the request, and its
       // message already explains why for every account. Nothing to retry.

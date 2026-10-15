@@ -178,7 +178,9 @@ export const MODES: Mode[] = [
       "on the ground — both give the model something to draw where the " +
       "transparency should be.",
     prefix: ALPHA_PREFIX,
-    suffix: "full body, simple design, clean lineart, isolated, no background",
+    // Style tags ("simple design", "clean lineart") would override the caller's
+    // artist tags, and framing ("full body") belongs in the subject.
+    suffix: "isolated, no background",
     // The UC presets fight cut-outs: they contain "negative space" and
     // "blank page", which is exactly what a transparent asset is.
     negative: "background, scenery, backdrop, drop shadow, cast shadow, border, frame",

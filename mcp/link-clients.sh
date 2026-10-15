@@ -21,10 +21,11 @@
 # the variable; Grok's MCP headers do not expand variables at all.
 set -euo pipefail
 
-HOST="${1:-JDCloud-4c16g}"
-URL="${2:-https://www.asylum.icu/nai/mcp}"
+HOST="${1:-HK}"
+URL="${2:-https://nai.huryzhrft.xyz/mcp}"
 ENV_FILE="$HOME/.config/nai-mcp.env"
 GROK_CONFIG="$HOME/.grok/config.toml"
+CODEX_CONFIG="$HOME/.codex/config.toml"
 
 echo "==> 从 $HOST 取令牌"
 TOKEN="$(ssh -o ConnectTimeout=15 "$HOST" \
@@ -100,8 +101,12 @@ block = (
 # rather than just a placeholder: re-running after a rotation has to work once
 # REPLACE_ME is long gone, and leaving the old comments behind would have the
 # file describing a setup step that already happened.
+# Sub-tables like [mcp_servers.novelai.headers] are swallowed too: the block
+# writes headers inline, so a leftover sub-table is a duplicate key and Grok
+# refuses to start.
 pattern = re.compile(
-    r"(?:^[ \t]*#[^\n]*\n)*\[mcp_servers\.novelai\]\n(?:(?!\n\[).)*",
+    r"(?:^[ \t]*#[^\n]*\n)*\[mcp_servers\.novelai\]\n(?:(?!\n\[).)*"
+    r"(?:\n*\[mcp_servers\.novelai\.[^\]\n]+\]\n(?:(?!\n\[).)*)*",
     re.S | re.M,
 )
 if pattern.search(text):
@@ -117,6 +122,28 @@ os.chmod(path, 0o600)
 PY
 else
   echo "    没有 $GROK_CONFIG，跳过"
+fi
+
+echo "==> 改 Codex 的 URL"
+# Codex takes the token by reference (bearer_token_env_var, written above), so
+# only the url line inside its [mcp_servers.novelai] block needs touching. The
+# timeouts and anything else the user put there are left alone.
+if [ -f "$CODEX_CONFIG" ]; then
+  CODEX_CONFIG="$CODEX_CONFIG" CODEX_URL="$URL" python3 - <<'CODEXPY'
+import io, os, re
+path = os.environ["CODEX_CONFIG"]
+url = os.environ["CODEX_URL"]
+text = io.open(path, encoding="utf-8").read()
+pattern = re.compile(r'(\[mcp_servers\.novelai\]\n(?:(?!\n\[).)*?^url = )"[^"]*"', re.S | re.M)
+if pattern.search(text):
+    text = pattern.sub(lambda m: m.group(1) + '"' + url + '"', text, count=1)
+    io.open(path, "w", encoding="utf-8").write(text)
+    print("    已更新 url")
+else:
+    print("    没有 [mcp_servers.novelai] 块，跳过（用 codex mcp add 建一个）")
+CODEXPY
+else
+  echo "    没有 $CODEX_CONFIG，跳过"
 fi
 
 unset TOKEN

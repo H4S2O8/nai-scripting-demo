@@ -20,7 +20,7 @@
 # sees. An env file that parses is not the same thing as a pool that works.
 set -euo pipefail
 
-HOST="${NAI_SSH_HOST:-JDCloud-4c16g}"
+HOST="${NAI_SSH_HOST:-HK}"
 SERVICE=novelai-mcp
 ENV_FILE=/etc/$SERVICE.env
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
