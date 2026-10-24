@@ -42,7 +42,7 @@ echo "==> 同步代码"
 # Only the files the bundle actually needs, plus the ones it might grow into.
 # Nothing that imports \"scripting\" — that package does not exist off-device.
 rsync -az --delete \
-  --exclude node_modules --exclude dist \
+  --exclude node_modules --exclude dist --exclude fonts \
   "$REPO/mcp/" "$HOST:$REMOTE/mcp/"
 rsync -az \
   "$REPO/accounts.ts" "$REPO/blake2b.ts" "$REPO/chunks.ts" "$REPO/inflate.ts" \
@@ -54,7 +54,8 @@ ssh "$HOST" "set -e
   cd $REMOTE/mcp
   npm ci --silent
   npm run --silent build
-  test -s dist/http.mjs"
+  test -s dist/http.mjs
+  ./fetch-font.sh"
 
 echo "==> 写配置（首次生成密钥，重跑时保留）"
 ssh "$HOST" "set -e
