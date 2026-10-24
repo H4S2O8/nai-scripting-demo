@@ -1,8 +1,12 @@
 # NovelAI 生图 MCP Server
 
-把这个仓库里那套已经验证过的请求构造（`../nai.ts`）包成 MCP server。发出去的 payload
-和手机 App 完全一致——质量词、UC 预设、V5 强制 Karras、Variety+ 的 sigma、人物 caption
-都走同一份代码。
+把这个仓库里那套已经验证过的请求构造（`../nai.ts`）包成 MCP server。V5 强制 Karras、
+Variety+ 的 sigma、人物 caption 的结构都和手机 App 走同一份代码。
+
+区别只有一处：**MCP 原样发送提示词**（`verbatim`）。App 跟官方客户端一样会在末尾补质量词、
+往负面里并 UC 预设；MCP 不补，最终 prompt 完全由调用它的 agent 决定。原因是 V5 会把 `Text:`
+后面的东西全当成要画的字——以前 `Text: OPEN` 出来的招牌上写着「OPEN, very aesthetic,
+masterpiece」。这些知识改放在 `novelai_guide` 手册里，agent 自己决定抄不抄。
 
 两个入口：
 
@@ -244,11 +248,12 @@ NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
 
 ## 工具
 
-**`novelai_generate_image`** —— 出图，存 PNG，返回路径、seed、Anlas 估算，以及**实际发送
-的提示词**（质量词合并后的结果，方便核对）。
+**`novelai_generate_image`** —— 出图，存 PNG，返回链接、seed、扣费，以及每张图是否带 alpha
+通道。`prompt`、`negative`、角色 caption 都**原样发送**：不补质量词、不并 UC 预设、不加透明
+标签、不去重。
 
 参数：`prompt`（必填）、`negative`、`model`、`width` / `height`、`steps`、`guidance`、
-`sampler`、`seed`、`ucPreset`、`qualityPreset`、`count`（1–8）、`characters`、`returnImage`。
+`sampler`、`seed`、`count`（1–8）、`characters`、`imageSize`、`previewWidth`、`returnImage`。
 
 - 尺寸自动按 64 取整并限制在 3 MP 以内
 - `seed` 留空或 0 表示每张随机
@@ -257,7 +262,94 @@ NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
   是 1–2 MB，走蜂窝网络要几秒。嫌慢就设 `NOVELAI_INLINE_IMAGES=0`，改用 `NOVELAI_PUBLIC_URL`
   给出的直链
 
-**`novelai_list_options`** —— 模型、采样器、画幅预设、UC 预设、质量词预设和默认值。
+**`novelai_guide`** —— 提示词手册（`mcp/guide.ts`）。不带 `topic` 返回目录；topic 有
+`basics`、`quality`、`text`、`characters`、`transparent`、`visual-novel`、`manga`，每个都附
+完整的调用示例。`quality` 里各模型的官方质量词和 UC 预设原文直接从 `nai.ts` 生成，不另存一份。
+以前的五个模式工具（`novelai_illustration`、`novelai_visual_novel`、`novelai_manga_page`、
+`novelai_asset_character`、`novelai_asset_item`）已删除，它们的写法都在这里。
+
+### 工作室：项目、章节、镜头、抽卡（`mcp/studio.ts`）
+
+项目存在服务器上，agent 和以后的网页审阅共用同一份数据。两种项目：
+
+- **图集 gallery**：一组镜头（构思），每个镜头抽多张，好的都保留。
+- **小说 novel**：按章节存原文，服务器切页（移植自 novel-illustration 的 `book.py`：引号里不拆、
+  优先段落边界、每页贴近目标字数）；每页最多一个镜头，最终选中一张图。
+
+项目里还有画风（说明和每次要带上的提示词片段，**不会自动拼进提示词**）、角色设定卡（外貌 tag、
+各套服装）、排版设置，以及谁来选图：`human`（默认，agent 只能标推荐）或 `agent`。
+
+每张抽出来的图先是「候选」，再被选中（小说镜头只能选一张，选新的旧的退回候选）或淘汰。
+镜头的状态：待写镜头 → 待抽卡 → 待选图 → 已完成。重切页时文字没变的页保留 id、镜头和图；
+文字变了的页上的镜头「脱页」，镜头和图都保留，等重新挂到页上。
+
+| 工具 | 作用 |
+| --- | --- |
+| `novelai_project` | list / get / create / update：设置、角色设定卡、进度 |
+| `novelai_novel_text` | set（新增或替换一章原文并切页）/ resplit / pages / read |
+| `novelai_shot` | set（写或改镜头；`shotId + pageId` 重挂脱页镜头）/ get（含所有候选）/ list |
+| `novelai_draw` | 按镜头存的提示词抽 N 张（每张新 seed），返回带库 id 的缩略拼图 |
+| `novelai_verdict` | favorite / unfavorite / pick / reject / reset；用户在对话里点名时带 `decidedBy: user` |
+| `novelai_review` | 待办：人的意见、待选图、待抽卡、待写镜头、脱页镜头；也可留言、resolve |
+
+数据库结构用 `PRAGMA user_version` 升级：v2 只加表加列，线上库原地升级，老图的数据不动。
+
+### 图库（`mcp/library.ts`）
+
+每张生成的图都会入库，记录完整参数（prompt、负面、角色 caption 和坐标、模型、尺寸、步数、
+guidance、采样器、seed）、透明像素占比、账户和花费。`novelai_generate_image` 可以带
+`project` 和 `tags`，入库时直接归档；回执里有图片的库 id（`#123`）。
+
+| 工具 | 作用 |
+| --- | --- |
+| `novelai_library_search` | 按项目 / 未归项目 / 标签（全部命中）/ prompt 文本 / 模型 / 存储位置 / 时间筛选，新的在前 |
+| `novelai_library_get` | 完整记录，外加 `regenerate`：能原样复现这张图的生成参数 |
+| `novelai_library_update` | 批量改项目、加删标签、写备注；全部成功或全部不改 |
+
+没有删图的工具。
+
+- 数据库是 SQLite（better-sqlite3），默认 `$NOVELAI_OUTPUT_DIR/library.db`，可用
+  `NOVELAI_LIBRARY_DB` 改位置。
+- 项目和标签只存在库里，不进 R2 的 key：key 不可变，发出去的链接改归档后也不会失效。
+- `stored` 三种：`r2`（有公开链接）、`local`（R2 上传失败，只在服务器磁盘，会被清理）、
+  `archive`（R2 上已删除，只在 Mac 备份 `~/Backups/r2/socialsight-previews/<key>`）。
+
+**补录旧图**（`backfill.ts`）：NovelAI 把完整请求写在每张 PNG 的 `Comment` 文本块里。
+
+```bash
+node mcp/dist/backfill.mjs extract ~/Backups/r2/socialsight-previews > records.jsonl   # Mac
+scp records.jsonl HK:/tmp/ && ssh HK 'set -a; . /etc/novelai-mcp.env; cd /opt/novelai-mcp/mcp && node dist/backfill.mjs import /tmp/records.jsonl'
+```
+
+import 会列一遍 bucket，还在线上的记为 `r2`、其余记为 `archive`；已入库的 key 跳过，可重复跑。
+
+**每晚备份**（`backup.ts`）：在线备份数据库，gzip 后传到**私有** bucket，按星期几和月份命名
+（保留最近 7 天 + 每月一份，不删任何东西）。图片 bucket 是公开的，库里又有全部 prompt，所以
+备份必须用单独的 bucket 和只授权它的 token：`R2_BACKUP_BUCKET`、`R2_BACKUP_ACCESS_KEY_ID`、
+`R2_BACKUP_SECRET_ACCESS_KEY`，缺一个就报错退出。
+
+### 左图右文（`mcp/page.ts`）
+
+**`novelai_compose_page`** —— 参数是左侧图片的链接和右侧文字的原文，合成一页「左图右文」的
+PNG，默认黑底白字。可选 `background` / `textColor`（#rgb 或 #rrggbb）、`title`（页眉）、
+`pageNumber`（页脚）、`continued`（首段接上一页，不缩进）、`indent`。
+
+- 图片按原尺寸放在左边，右边是思源黑体 DemiLight（Noto Sans SC，比 Regular 细一档，深底浅字不显粗）的文字栏。每行原文是一段，首行缩进
+  两字；粘贴来的全角空格缩进会先去掉，避免缩进两次。
+- 排版规则来自 novel-illustration skill：句读不出现在行首（悬挂到上一行末），开引号、开括号
+  不出现在行尾，末行只剩一个字时从上一行拉一个下来，略短的行两端对齐。
+- 自适应，面向手机、平板阅读：整页在屏幕上会按宽度缩放，所以真正决定看起来大小的是
+  「字号 ÷ 整页宽度」，排版就把这个比值做到最大。约束是文字栏不宽于图片、每行 14–30 字；
+  每个字号取能放下全文的最窄文字栏，再在各字号里挑比值最高的（并列取大字号）。结果是字少时
+  字大、栏窄，字多时字号降下来，但整页不会因为文字多而变宽。字号范围是页高的 26/1216 到
+  60/1216；最小字号也放不下时才收紧行距（1.9 → 1.75 → 1.6）。仍放不下就报错，并估算这张图
+  一页大约能放多少字，不会截断，也不会加宽页面。竖图 832×1216 一页约 390 字。
+- 图片只从公网 http(s) 下载：解析到内网、回环、链路本地地址的链接和跳转一律拒绝，上限 30MB。
+- 成品上传到 R2 的 `nai-pages/`，不进 `nai/`（图库补录只认 NovelAI 原图）。
+- 字体 8.3MB 不进仓库，由 `mcp/fetch-font.sh` 按固定版本下载并校验 SHA-256，`deploy.sh` 会在
+  服务器上自动运行。缺字体时直接报错，不会换成别的字体。
+
+**`novelai_list_options`** —— 模型、采样器、画幅预设和默认值。
 让模型先查一次，好过把所有合法值塞进参数描述里。
 
 **`novelai_account`** —— 等级、Anlas 余额、Opus 剩余额度。
@@ -299,6 +391,6 @@ npm test
 
 `buildPayload` 里有一堆不查就会错的东西：V5 必须强制 `noise_schedule: "karras"`（按采样器
 推导会让 DPM++ 静默变成 Exponential）、Variety+ 是 `skip_cfg_above_sigma: 58` 而不是布尔
-字段、质量词和 UC 预设文本按模型分支、角色 caption 的 `centers` 数组即使不指定位置也不能为空
+字段、角色 caption 的 `centers` 数组即使不指定位置也不能为空
 （否则接口直接 500）。这些都是对着官方客户端的真实请求逐字段核对出来的，仓库里有 200 多项
 测试守着。

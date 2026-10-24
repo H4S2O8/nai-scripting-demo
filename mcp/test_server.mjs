@@ -12,7 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { spawn } from "node:child_process"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -104,27 +104,77 @@ console.log("mcp server over stdio")
   check(
     "exposes every tool",
     JSON.stringify(names) ===
-      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_visual_novel"]),
+      JSON.stringify(["novelai_account", "novelai_compose_page", "novelai_draw", "novelai_generate_image", "novelai_guide", "novelai_library_get", "novelai_library_search", "novelai_library_update", "novelai_list_options", "novelai_novel_text", "novelai_project", "novelai_review", "novelai_shot", "novelai_verdict"]),
     JSON.stringify(names),
   )
   const gen = tools.find((t) => t.name === "novelai_generate_image")
   check("generate declares a prompt parameter", gen.inputSchema?.properties?.prompt != null)
   check("prompt is the only required one", JSON.stringify(gen.inputSchema?.required) === '["prompt"]', JSON.stringify(gen.inputSchema?.required))
 
-  // The mode tools take a subject plus their own switches; these live in
-  // tools.ts, which the modes tests cannot reach.
-  const manga = tools.find((t) => t.name === "novelai_manga_page")
-  const palette = manga?.inputSchema?.properties?.palette
-  check("the manga page offers a palette", palette != null)
-  check("it offers colour and monochrome",
-        JSON.stringify(palette?.enum) === '["color","monochrome"]', JSON.stringify(palette?.enum))
-  check("the palette is optional",
-        !(manga?.inputSchema?.required ?? []).includes("palette"))
-  const vn = tools.find((t) => t.name === "novelai_visual_novel")
-  check("only the visual novel tool takes a kind",
-        vn?.inputSchema?.properties?.kind != null && manga?.inputSchema?.properties?.kind == null)
-  check("only the manga tool takes a palette",
-        vn?.inputSchema?.properties?.palette == null)
+  // Nothing the server would add to the prompt is configurable any more; the
+  // presets are text in the manual instead.
+  check("generate takes no preset switches",
+        gen.inputSchema?.properties?.ucPreset == null && gen.inputSchema?.properties?.qualityPreset == null)
+  check("generate says the prompt is sent verbatim", /VERBATIM/.test(gen.description))
+  check("generate points at the manual", /novelai_guide/.test(gen.description))
+
+  const guide = tools.find((t) => t.name === "novelai_guide")
+  check("the guide's topic is optional", !(guide?.inputSchema?.required ?? []).includes("topic"))
+  check("the guide lists its topics in the schema",
+        (guide?.inputSchema?.properties?.topic?.enum ?? []).includes("text"))
+  const index = await client.callTool({ name: "novelai_guide", arguments: {} })
+  check("the guide with no topic returns the index", /manga/.test(index.content[0].text) && !index.isError)
+  const textTopic = await client.callTool({ name: "novelai_guide", arguments: { topic: "text" } })
+  check("a guide topic returns its text", /Text:/.test(textTopic.content[0].text))
+  const badTopic = await client.callTool({ name: "novelai_guide", arguments: { topic: "nope" } })
+  check("an unknown guide topic is refused", badTopic.isError === true)
+
+  // The library: a fresh database in the temp output dir.
+  check("generate takes a project and tags",
+        gen.inputSchema?.properties?.project != null && gen.inputSchema?.properties?.tags != null)
+  const badProject = await client.callTool({ name: "novelai_generate_image", arguments: { prompt: "1girl", project: "   " } })
+  check("a bad project name is refused before generating",
+        badProject.isError === true && /项目名/.test(badProject.content[0].text), badProject.content[0].text)
+  const emptyList = await client.callTool({ name: "novelai_project", arguments: { action: "list" } })
+  check("an empty studio lists no projects", !emptyList.isError && JSON.parse(emptyList.content[0].text).length === 0, emptyList.content[0].text)
+  const made = await client.callTool({ name: "novelai_project", arguments: { action: "create", name: "Test Book", kind: "novel", description: "for the suite" } })
+  check("a project can be created", !made.isError && JSON.parse(made.content[0].text).name === "Test Book", made.content[0].text)
+  const listed = JSON.parse((await client.callTool({ name: "novelai_project", arguments: { action: "list" } })).content[0].text)
+  check("the list shows it", listed.some((p) => p.name === "Test Book" && p.kind === "novel" && p.description === "for the suite"))
+  const kindless = await client.callTool({ name: "novelai_project", arguments: { action: "create", name: "X" } })
+  check("creating without a kind is refused", kindless.isError === true && /kind/.test(kindless.content[0].text))
+  const chapter = await client.callTool({ name: "novelai_novel_text", arguments: { action: "set", project: "Test Book", chapter: 1, text: "雨还在下。\n她没有回头。" } })
+  check("a chapter can be set", !chapter.isError && /第 1 章/.test(chapter.content[0].text), chapter.content[0].text)
+  const pageList = await client.callTool({ name: "novelai_novel_text", arguments: { action: "pages", project: "Test Book" } })
+  const pageId = Number((pageList.content[0].text.match(/页 #(\d+)/) ?? [])[1])
+  check("its pages are listed with ids", pageId > 0, pageList.content[0].text)
+  const shotSet = await client.callTool({ name: "novelai_shot", arguments: { action: "set", project: "Test Book", pageId, prompt: "rain, night" } })
+  const shotId = Number((shotSet.content[0].text.match(/镜头 #(\d+)/) ?? [])[1])
+  check("a shot can be set on a page", shotId > 0 && /待抽卡/.test(shotSet.content[0].text), shotSet.content[0].text)
+  const drawNoToken = await client.callTool({ name: "novelai_draw", arguments: { shotId, count: 1 } })
+  check("drawing without a NovelAI token fails clearly", /NOVELAI_TOKEN|生成失败/.test(drawNoToken.content[0].text), drawNoToken.content[0].text)
+  const review = await client.callTool({ name: "novelai_review", arguments: { project: "Test Book" } })
+  check("the review lists the shot waiting to be drawn", /待抽卡/.test(review.content[0].text), review.content[0].text)
+  const pickLoose = await client.callTool({ name: "novelai_verdict", arguments: { imageIds: [999], action: "pick" } })
+  check("a verdict on an unknown image is an error", pickLoose.isError === true)
+  const none = await client.callTool({ name: "novelai_library_search", arguments: { project: "Test Book" } })
+  check("searching an empty project says so", !none.isError && /没有符合/.test(none.content[0].text))
+  const unknown = await client.callTool({ name: "novelai_library_search", arguments: { project: "Nope" } })
+  check("searching an unknown project is an error", unknown.isError === true)
+  const noop = await client.callTool({ name: "novelai_library_update", arguments: { ids: [1] } })
+  check("an update with nothing to change is refused", noop.isError === true)
+  const missing = await client.callTool({ name: "novelai_library_get", arguments: { ids: [12345] } })
+  check("getting an unknown id is an error", missing.isError === true && /12345/.test(missing.content[0].text))
+  check("the library file lives in the output dir", existsSync(join(outDir, "library.db")))
+
+  // The page composer refuses before touching the network where it can.
+  const page = tools.find((t) => t.name === "novelai_compose_page")
+  check("the composer takes an image link and the text",
+        JSON.stringify(page?.inputSchema?.required) === '["imageUrl","text"]', JSON.stringify(page?.inputSchema?.required))
+  const internal = await client.callTool({ name: "novelai_compose_page", arguments: { imageUrl: "http://127.0.0.1:8787/health", text: "雨还在下。" } })
+  check("the composer will not fetch from this machine", internal.isError === true && /内网/.test(internal.content[0].text), internal.content[0].text)
+  const badColour = await client.callTool({ name: "novelai_compose_page", arguments: { imageUrl: "https://example.invalid/x.png", text: "x", background: "black" } })
+  check("a bad colour is refused before any download", badColour.isError === true && /#rgb/.test(badColour.content[0].text), badColour.content[0].text)
 
   const options = await client.callTool({ name: "novelai_list_options", arguments: {} })
   const parsed = JSON.parse(options.content[0].text)
@@ -339,7 +389,7 @@ console.log("http transport")
   check(
     "the same tools are served over http",
     JSON.stringify(httpTools) ===
-      JSON.stringify(["novelai_account", "novelai_asset_character", "novelai_asset_item", "novelai_generate_image", "novelai_illustration", "novelai_list_options", "novelai_manga_page", "novelai_visual_novel"]),
+      JSON.stringify(["novelai_account", "novelai_compose_page", "novelai_draw", "novelai_generate_image", "novelai_guide", "novelai_library_get", "novelai_library_search", "novelai_library_update", "novelai_list_options", "novelai_novel_text", "novelai_project", "novelai_review", "novelai_shot", "novelai_verdict"]),
     JSON.stringify(httpTools),
   )
   const opts = await httpClient.callTool({ name: "novelai_list_options", arguments: {} })

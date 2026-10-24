@@ -14,6 +14,16 @@ echo
 echo "== mcp server (skipped unless mcp/node_modules exists) =="
 if [ -d mcp/node_modules ]; then
   ( cd mcp && npm run --silent build && node test_server.mjs )
+  echo
+  echo "== image library (sqlite) =="
+  node dev/test_library.mjs
+  echo
+  echo "== studio: projects, pages, shots, verdicts =="
+  node dev/test_studio.mjs
+  echo
+  echo "== picture-and-text pages =="
+  ./mcp/fetch-font.sh
+  node dev/test_page.mjs
 else
   echo "  -- skipped; run 'cd mcp && npm install' to include it"
 fi
@@ -42,5 +52,5 @@ echo
 echo "== mcp account pool =="
 node dev/test_pool.mjs
 echo
-echo "== mcp v5 modes =="
-node dev/test_modes.mjs
+echo "== mcp prompt manual and verbatim payload =="
+node dev/test_guide.mjs
