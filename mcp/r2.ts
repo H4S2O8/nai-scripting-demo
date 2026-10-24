@@ -66,8 +66,9 @@ export async function uploadToR2(
   config: R2Config,
   localPath: string,
   bytes: Buffer,
+  prefix = config.prefix,
 ): Promise<string | null> {
-  const key = config.prefix + basename(localPath)
+  const key = prefix + basename(localPath)
   const endpoint = `https://${config.accountId}.r2.cloudflarestorage.com/${config.bucket}/${key}`
   try {
     const client = new AwsClient({
@@ -94,4 +95,53 @@ export async function uploadToR2(
     console.error("[r2] " + (error instanceof Error ? error.message : String(error)))
     return null
   }
+}
+
+function client(config: R2Config) {
+  return new AwsClient({
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+    service: "s3",
+    region: "auto",
+  })
+}
+
+/**
+ * Upload arbitrary bytes. Unlike uploadToR2 this throws: its callers are the
+ * backup script and the backfill, where a failed write has to stop the run.
+ */
+export async function putObject(
+  config: R2Config,
+  bucket: string,
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<void> {
+  const endpoint = `https://${config.accountId}.r2.cloudflarestorage.com/${bucket}/${encodeURI(key)}`
+  const response = await client(config).fetch(endpoint, {
+    method: "PUT",
+    body,
+    headers: { "content-type": contentType },
+  })
+  if (!response.ok) throw new Error(`R2 写入 ${bucket}/${key} 失败：${response.status} ${await response.text()}`)
+}
+
+/** Every key under a prefix in the configured bucket. Throws on any listing error. */
+export async function listKeys(config: R2Config, prefix: string): Promise<Set<string>> {
+  const keys = new Set<string>()
+  const base = `https://${config.accountId}.r2.cloudflarestorage.com/${config.bucket}`
+  let token = ""
+  do {
+    const url =
+      `${base}?list-type=2&max-keys=1000&prefix=${encodeURIComponent(prefix)}` +
+      (token ? "&continuation-token=" + encodeURIComponent(token) : "")
+    const response = await client(config).fetch(url)
+    const xml = await response.text()
+    if (!response.ok) throw new Error(`R2 列表失败：${response.status} ${xml.slice(0, 200)}`)
+    for (const match of xml.matchAll(/<Key>([^<]*)<\/Key>/g)) {
+      keys.add(match[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"))
+    }
+    token = (xml.match(/<NextContinuationToken>([^<]*)</) || [])[1] ?? ""
+  } while (token)
+  return keys
 }
