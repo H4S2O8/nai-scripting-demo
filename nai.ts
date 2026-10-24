@@ -134,6 +134,14 @@ export type GenerateParams = {
   variety: boolean
   transparent: boolean
   batch: number
+  /**
+   * Send prompt, negative and captions exactly as written: no quality tags, no
+   * UC preset, no chunk expansion, no comma merging. The MCP sets this so the
+   * calling agent owns the final prompt — an appended tag after `Text:` gets
+   * lettered into the image. The app leaves it off and keeps the official
+   * client's behaviour.
+   */
+  verbatim?: boolean
 }
 
 export const DEFAULT_PARAMS: GenerateParams = {
@@ -325,11 +333,16 @@ function switchQualityTags(model: string): string {
   }
 }
 
-function qualityTags(model: string, preset: QualityPreset, prompt: string): string {
+/** The official quality tags for a model and preset, as the web client appends them. */
+export function qualityPresetText(model: string, preset: QualityPreset): string {
   if (preset === "none") return ""
-  let tags = preset === "light" && isV5(model)
+  return preset === "light" && isV5(model)
     ? "very aesthetic, amazing quality, no text"
     : switchQualityTags(model)
+}
+
+function qualityTags(model: string, preset: QualityPreset, prompt: string): string {
+  let tags = qualityPresetText(model, preset)
 
   // The official quality presets contain `no text`. Keeping it next to V5's
   // explicit `Text:` directive makes the request contradict itself and
@@ -421,6 +434,7 @@ export function mergePrompt(...segments: string[]): string {
  * which splits on commas and would tear a reference apart.
  */
 export function effectivePrompt(params: GenerateParams): string {
+  if (params.verbatim) return params.prompt
   const base = mergePrompt(
     expandPrompt(params.stylePrompt.trim()),
     expandPrompt(params.characterPrompt.trim()),
@@ -437,6 +451,7 @@ export function effectivePrompt(params: GenerateParams): string {
 
 /** The exact negative prompt that will be sent, after the UC preset merges in. */
 export function effectiveNegative(params: GenerateParams): string {
+  if (params.verbatim) return params.negative
   return mergePrompt(
     expandPrompt(params.negative.trim()),
     ucPresetText(params.model, params.ucPreset),
@@ -451,15 +466,18 @@ function clamp01(value: number, fallback: number): number {
 export function activeCharacters(params: GenerateParams): CharacterPrompt[] {
   const limit = maxCharacterPrompts(params.model)
   if (limit === 0) return []
+  const text = params.verbatim
+    ? (value: string | undefined) => value ?? ""
+    : (value: string | undefined) => expandPrompt((value ?? "").trim())
   return (params.characters ?? [])
     .map((character) => ({
-      prompt: expandPrompt((character.prompt ?? "").trim()),
-      negative: expandPrompt((character.negative ?? "").trim()),
+      prompt: text(character.prompt),
+      negative: text(character.negative),
       useCoords: character.useCoords === true,
       x: clamp01(Number(character.x), 0.5),
       y: clamp01(Number(character.y), 0.5),
     }))
-    .filter((character) => character.prompt.length > 0)
+    .filter((character) => character.prompt.trim().length > 0)
     .slice(0, limit)
 }
 
@@ -475,6 +493,10 @@ export function buildPayload(params: GenerateParams, seed: number) {
   const v5 = isV5(params.model)
   const v4Plus = isV4Plus(params.model)
   const transparent = v5 && params.transparent
+  // The preset fields describe what was merged into the prompt; in verbatim
+  // mode nothing was, so the metadata says so too.
+  const ucPreset = params.verbatim ? 3 : params.ucPreset
+  const qualityPreset: QualityPreset = params.verbatim ? "none" : params.qualityPreset
   const actualSeed = Math.min(MAX_SEED, Math.max(1, Math.round(seed) || 1))
   const guidance = Math.min(10, Math.max(0, Number(params.guidance) || 0))
 
@@ -495,18 +517,18 @@ export function buildPayload(params: GenerateParams, seed: number) {
     noise_schedule: noiseSchedule,
     uc: negative,
     negative_prompt: negative,
-    ucPreset: params.ucPreset,
-    uc_preset: params.ucPreset,
+    ucPreset,
+    uc_preset: ucPreset,
     cfg_rescale: params.rescale,
     legacy: false,
     legacy_v3_extend: false,
     dynamic_thresholding: v5 ? false : params.rescale > 0,
     skip_cfg_above_sigma: null,
-    qualityPresetId: params.qualityPreset,
-    qualityToggle: params.qualityPreset !== "none",
-    quality_toggle: params.qualityPreset !== "none",
+    qualityPresetId: qualityPreset,
+    qualityToggle: qualityPreset !== "none",
+    quality_toggle: qualityPreset !== "none",
     tag_hint_qt:
-      params.qualityPreset === "standard" ? 1 : params.qualityPreset === "light" ? 3 : 0,
+      qualityPreset === "standard" ? 1 : qualityPreset === "light" ? 3 : 0,
   }
 
   if (v5) {

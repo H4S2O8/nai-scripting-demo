@@ -223,10 +223,12 @@ claude mcp add novelai --env NOVELAI_TOKEN=pst-你的令牌 -- node "$PWD/dist/s
 **这个端点会花钱**——每次调用消耗账户 Anlas，所以 HTTP 模式下 `MCP_AUTH_TOKEN` 是必填的，
 不设置进程直接拒绝启动。
 
-三个工具：`novelai_generate_image`（出图，返回路径 / seed / Anlas 估算 / 实际发送的提示词）、
-`novelai_list_options`（模型、采样器、画幅预设）、`novelai_account`（订阅与额度）。
+四个工具：`novelai_generate_image`（出图，提示词原样发送）、`novelai_guide`（提示词手册：
+质量词、文字渲染、多角色、透明素材、VN、漫画）、`novelai_list_options`（模型、采样器、画幅预设）、
+`novelai_account`（订阅与额度）。
 
-手机 App 和 MCP 共用 `nai.ts` 的 `buildPayload`——两边发出去的 payload 逐字段一致。
+手机 App 和 MCP 共用 `nai.ts` 的 `buildPayload`。唯一的区别是 MCP 打开了 `verbatim`：App 照官方
+客户端补质量词、并 UC 预设，MCP 一个字都不加，最终 prompt 由 agent 自己写。
 
 ## 开发
 
