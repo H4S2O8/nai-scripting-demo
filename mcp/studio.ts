@@ -558,6 +558,38 @@ export class Studio {
     })()
   }
 
+  /**
+   * Make images that were drawn outside any shot — with novelai_generate_image,
+   * or by an older shot's prompt — candidates of this shot, so they can be
+   * picked like anything novelai_draw produced. All or nothing.
+   *
+   * An image already in another shot is refused rather than moved: taking it
+   * would silently change what that shot offers, or unpick its page. An
+   * archived image is refused too — without its original on R2 it can be
+   * neither previewed nor laid out.
+   */
+  adopt(shotId: number, imageIds: number[]) {
+    return this.db.transaction(() => {
+      const shot = this.getShots([shotId])[0]
+      const project = this.projectRow(shot.project)
+      const images = this.library.get(imageIds)
+      for (const image of images) {
+        if (image.shotId === shot.id) continue
+        if (image.shotId !== null) {
+          throw new Error(`#${image.id} 已经是镜头 #${image.shotId} 的候选图，不能直接挪过来`)
+        }
+        if (image.stored === "archive" || image.purgedAt) {
+          throw new Error(`#${image.id} 已归档，线上没有原图，不能用作候选`)
+        }
+      }
+      const take = this.db.prepare(
+        "UPDATE images SET shot_id = ?, verdict = 'candidate', project_id = ? WHERE id = ? AND shot_id IS NULL",
+      )
+      for (const image of images) take.run(shot.id, project.id, image.id)
+      return this.library.get(imageIds)
+    })()
+  }
+
   /* ------------------------------------------------------------ verdicts */
 
   /**
@@ -569,7 +601,9 @@ export class Studio {
     return this.db.transaction(() => {
       const images = this.library.get(imageIds)
       for (const image of images) {
-        if (image.shotId === null) throw new Error(`#${image.id} 不是任何镜头的候选图，没有选不选的问题`)
+        if (image.shotId === null) {
+          throw new Error(`#${image.id} 不是任何镜头的候选图。要用它，先用 novelai_shot 的 adopt 把它收进镜头，再选`)
+        }
         const shot = this.getShots([image.shotId])[0]
         const project = this.projectRow(shot.project)
         if (action === "pick" && by === "agent" && project.picker !== "agent") {
@@ -592,6 +626,144 @@ export class Studio {
       }
       return this.library.get(imageIds)
     })()
+  }
+
+  /* ----------------------------------------------------- web read views */
+
+  /** The picked image of each shot (the newest, for a gallery that keeps several). */
+  private picks(shotIds: number[]): Map<number, number[]> {
+    const out = new Map<number, number[]>()
+    if (shotIds.length === 0) return out
+    const rows = this.db
+      .prepare(
+        `SELECT shot_id, id FROM images WHERE verdict = 'picked' AND shot_id IN (${shotIds.map(() => "?").join(",")})
+         ORDER BY created_at DESC, id DESC`,
+      )
+      .all(...shotIds) as { shot_id: number; id: number }[]
+    for (const row of rows) out.set(row.shot_id, [...(out.get(row.shot_id) ?? []), row.id])
+    return out
+  }
+
+  /**
+   * What to show for a shot before anything is picked: the agent's favourite,
+   * else the newest candidate. Rejected images never stand in.
+   */
+  private covers(shotIds: number[]): Map<number, number> {
+    const out = new Map<number, number>()
+    if (shotIds.length === 0) return out
+    const rows = this.db
+      .prepare(
+        `SELECT shot_id, id FROM images WHERE verdict = 'candidate' AND shot_id IN (${shotIds.map(() => "?").join(",")})
+         ORDER BY favorite DESC, created_at DESC, id DESC`,
+      )
+      .all(...shotIds) as { shot_id: number; id: number }[]
+    for (const row of rows) if (!out.has(row.shot_id)) out.set(row.shot_id, row.id)
+    return out
+  }
+
+  /** Chapters with their pages, each page carrying its picked image id (or a stand-in) for a thumbnail. */
+  novelOverview(project: string) {
+    const row = this.novel(project)
+    const chapters = this.db.prepare("SELECT ord, title FROM chapters WHERE project_id = ? ORDER BY ord").all(row.id) as {
+      ord: number
+      title: string
+    }[]
+    const pages = this.listPages(project)
+    const shotIds = pages.flatMap((p) => (p.shotId ? [p.shotId] : []))
+    const picks = this.picks(shotIds)
+    const covers = this.covers(shotIds)
+    return chapters.map((c) => ({
+      chapter: c.ord,
+      title: c.title,
+      pages: pages
+        .filter((p) => p.chapter === c.ord)
+        .map((p) => ({
+          ...p,
+          picked: p.shotId ? picks.get(p.shotId)?.[0] ?? null : null,
+          cover: p.shotId ? covers.get(p.shotId) ?? null : null,
+        })),
+    }))
+  }
+
+  /** A gallery's shots, newest first, each with its kept images. */
+  galleryOverview(project: string) {
+    const shots = this.listShots(project).reverse()
+    const picks = this.picks(shots.map((s) => s.id))
+    const covers = this.covers(shots.map((s) => s.id))
+    return shots.map((s) => ({ ...s, picked: picks.get(s.id) ?? [], cover: covers.get(s.id) ?? null }))
+  }
+
+  /**
+   * A project's images that belong to no shot — generated with only a project
+   * name, or filed into it afterwards. Newest first.
+   */
+  looseImages(project: string, limit = 120) {
+    const row = this.projectRow(project)
+    const total = (this.db.prepare("SELECT count(*) AS n FROM images WHERE project_id = ? AND shot_id IS NULL").get(row.id) as { n: number }).n
+    const rows = this.db
+      .prepare(
+        `SELECT i.*, p.name AS project FROM images i LEFT JOIN projects p ON p.id = i.project_id
+         WHERE i.project_id = ? AND i.shot_id IS NULL ORDER BY i.created_at DESC, i.id DESC LIMIT ?`,
+      )
+      .all(row.id, limit)
+    return { total, images: this.library.hydrate(rows) }
+  }
+
+  /** Open and resolved feedback on any of these targets, oldest first. */
+  feedbackOn(project: string, targets: { target: Feedback["target"]; id: number | null }[]): Feedback[] {
+    const all = this.feedback(project, true)
+    return all.filter((f) => targets.some((t) => t.target === f.target && (t.target === "project" || t.id === f.targetId)))
+  }
+
+  shotDetail(shotId: number) {
+    const shot = this.getShots([shotId])[0]
+    const candidates = this.candidates(shotId)
+    return {
+      shot,
+      candidates,
+      feedback: this.feedbackOn(shot.project, [
+        { target: "shot", id: shot.id },
+        ...candidates.map((c) => ({ target: "image" as const, id: c.id })),
+      ]),
+    }
+  }
+
+  pageDetail(pageId: number) {
+    const page = this.db
+      .prepare(
+        `SELECT p.id, p.ord, p.text, p.cont, c.ord AS chapter, c.title AS chapter_title, pr.name AS project, pr.layout AS layout
+         FROM pages p JOIN chapters c ON c.id = p.chapter_id JOIN projects pr ON pr.id = c.project_id WHERE p.id = ?`,
+      )
+      .get(pageId) as any
+    if (!page) throw new Error(`没有 id 为 ${pageId} 的页`)
+    const order = this.listPages(page.project)
+    const index = order.findIndex((p) => p.id === pageId)
+    const shotRow = this.db.prepare("SELECT id FROM shots WHERE page_id = ?").get(pageId) as { id: number } | undefined
+    const shot = shotRow ? this.shotDetail(shotRow.id) : null
+    return {
+      project: page.project as string,
+      layout: JSON.parse(page.layout) as Layout,
+      page: {
+        id: page.id as number,
+        chapter: page.chapter as number,
+        chapterTitle: page.chapter_title as string,
+        page: page.ord as number,
+        number: index + 1,
+        total: order.length,
+        text: page.text as string,
+        cont: page.cont === 1,
+        chars: countChars(page.text),
+        status: order[index].status,
+      },
+      prev: index > 0 ? order[index - 1].id : null,
+      next: index < order.length - 1 ? order[index + 1].id : null,
+      shot: shot?.shot ?? null,
+      candidates: shot?.candidates ?? [],
+      feedback: [
+        ...this.feedbackOn(page.project, [{ target: "page", id: pageId }]),
+        ...(shot?.feedback ?? []),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    }
   }
 
   /* ------------------------------------------------------------- review */

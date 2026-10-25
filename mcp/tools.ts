@@ -452,6 +452,13 @@ function textResult(text: string, isError = false) {
 
 export function buildServer(): McpServer {
   const server = new McpServer({ name: "novelai-image", version: "1.0.0" })
+  // Every tool refuses parameters it does not declare. zod's default is to drop
+  // them, and a dropped parameter looks to the caller exactly like one that
+  // took effect — an agent passing shotId to novelai_library_update was told
+  // nothing while nothing happened.
+  const register = server.registerTool.bind(server) as (...args: any[]) => any
+  ;(server as any).registerTool = (name: string, config: any, handler: any) =>
+    register(name, { ...config, inputSchema: z.object(config.inputSchema ?? {}).strict() }, handler)
 
   server.registerTool(
     "novelai_generate_image",
@@ -923,7 +930,7 @@ function registerLibraryTools(server: McpServer) {
  * The font the page composer renders with. NOVELAI_PAGE_FONT overrides it;
  * by default it is mcp/fonts/, next to dist/, where fetch-font.sh puts it.
  */
-function pageFont(): string {
+export function pageFont(): string {
   return (
     process.env.NOVELAI_PAGE_FONT?.trim() ||
     fileURLToPath(new URL("../fonts/NotoSansSC-DemiLight.otf", import.meta.url))

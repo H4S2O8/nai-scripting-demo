@@ -274,12 +274,16 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
         "novelai_generate_image (see novelai_guide). In a novel each page has at most one shot " +
         "(pass pageId); in a gallery a shot is a concept with a title. Actions: set (create, or " +
         "change the fields you pass; shotId + pageId re-attaches a detached shot); get (full " +
-        "spec plus every candidate with its verdict); list (a project's shots, optionally by status).",
+        "spec plus every candidate with its verdict); list (a project's shots, optionally by " +
+        "status); adopt (shotId + imageIds: make images already in the library — e.g. drawn with " +
+        "novelai_generate_image — candidates of this shot, so they can be picked. Images in " +
+        "another shot or archived are refused).",
       inputSchema: {
-        action: z.enum(["set", "get", "list"]),
+        action: z.enum(["set", "get", "list", "adopt"]),
         project: z.string().optional().describe("set and list."),
         shotId: z.number().int().optional(),
         shotIds: z.array(z.number().int()).max(20).optional().describe("get."),
+        imageIds: z.array(z.number().int()).min(1).max(50).optional().describe("adopt: library image ids."),
         pageId: z.number().int().optional(),
         status: z.enum(["shot", "draw", "pick", "done"]).optional(),
         title: z.string().optional(),
@@ -302,6 +306,12 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
           if (!args.project) return text("list 要给 project", true)
           const shots = s.listShots(args.project, args.status)
           return text(shots.length ? shots.map(shotLine).join("\n") : "没有符合条件的镜头。")
+        }
+        if (args.action === "adopt") {
+          if (!args.shotId || !args.imageIds?.length) return text("adopt 要给 shotId 和 imageIds", true)
+          const rows = s.adopt(args.shotId, args.imageIds)
+          const shot = s.getShots([args.shotId])[0]
+          return text(`已收进镜头 #${shot.id} 作为候选：\n` + rows.map(candidateLine).join("\n") + `\n现在：${counts(shot.counts)}`)
         }
         if (args.action === "get") {
           const ids = args.shotIds ?? (args.shotId ? [args.shotId] : [])
@@ -356,10 +366,18 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
         "seed per image — and file them as the shot's candidates. Returns their library ids and, " +
         "by default, one small contact sheet with every candidate labelled by id, to judge the " +
         "draw at a glance. Then mark the good ones with novelai_verdict (favorite, or pick when " +
-        "the project lets the agent pick). At 1 MP and 28 steps or fewer, Opus draws are free.",
+        "the project lets the agent pick). At 1 MP and 28 steps or fewer, Opus draws are free. " +
+        "Pass seeds to draw those exact seeds instead of fresh ones — the same seed, prompt and " +
+        "settings reproduce an image.",
       inputSchema: {
         shotId: z.number().int(),
-        count: z.number().int().min(1).max(8).optional().describe("Default 4."),
+        count: z.number().int().min(1).max(8).optional().describe("Default 4. Ignored when seeds is given."),
+        seeds: z
+          .array(z.number().int().min(1).max(4294967295))
+          .min(1)
+          .max(8)
+          .optional()
+          .describe("Draw exactly these seeds, one image each."),
         preview: z.enum(["sheet", "none"]).optional().describe("Default sheet."),
         sheetWidth: z.number().int().min(256).max(1536).optional().describe("Default 768."),
       },
@@ -399,7 +417,21 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
       if (params.characters.length > 0 && maxCharacterPrompts(params.model) === 0) {
         return text(`${modelLabel(params.model)} 不支持人物 caption，请把镜头的 model 换成 V4 及以上`, true)
       }
-      const batch = await deps.generate(params, args.count ?? 4, { project: shot.project, tags: [], shotId: shot.id })
+      const filing = { project: shot.project, tags: [] as string[], shotId: shot.id }
+      let batch: Awaited<ReturnType<StudioDeps["generate"]>>
+      if (args.seeds?.length) {
+        batch = { results: [] }
+        for (const seed of args.seeds) {
+          const one = await deps.generate({ ...params, seed }, 1, filing)
+          batch.results.push(...one.results)
+          if (one.failure) {
+            batch.failure = one.failure
+            break
+          }
+        }
+      } else {
+        batch = await deps.generate(params, args.count ?? 4, filing)
+      }
       const lines = batch.results.map(
         (r) => `  ${typeof r.filed === "number" ? "#" + r.filed : "入库失败：" + r.filed} · seed ${r.seed} · ${deps.publicUrl(r.path, r.remote) ?? r.path}`,
       )
