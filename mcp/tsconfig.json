@@ -1,0 +1,13 @@
+{
+  "//": "Pins the MCP build. Without it esbuild walks up to whatever tsconfig sits above the checkout (a home-directory one set a classic createElement JSX factory), and the build differs between machines.",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}
