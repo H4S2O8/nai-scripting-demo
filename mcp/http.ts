@@ -27,7 +27,12 @@ import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { timingSafeEqual } from "node:crypto"
 
-import { buildServer } from "./tools"
+import { buildServer, library, pageFont } from "./tools"
+import { EhClient } from "./ehclient"
+import { Publisher } from "./publish"
+import { Thumbs } from "./thumbs"
+import { handleWeb } from "./webapi"
+import { WebAuth } from "./webauth"
 import { createOAuth } from "./oauth"
 
 const AUTH = (process.env.MCP_AUTH_TOKEN ?? "").trim()
@@ -53,11 +58,18 @@ if (!(process.env.NOVELAI_TOKEN ?? "").trim() && !(process.env.NOVELAI_TOKENS ??
 // MCP_AUTH_TOKEN keeps working unchanged alongside it.
 const oauth = createOAuth(AUTH)
 
+// The review web page: Cloudflare Access when configured, else a login with
+// the same access key. See webauth.ts.
+const webAuth = WebAuth.fromEnv(AUTH)
+
 const PORT = Number(process.env.PORT ?? 8787)
 const HOST = process.env.HOST ?? "0.0.0.0"
 const OUTPUT_DIR =
   process.env.NOVELAI_OUTPUT_DIR?.trim() || join(homedir(), "Pictures", "NovelAI")
 mkdirSync(OUTPUT_DIR, { recursive: true })
+const thumbs = new Thumbs(OUTPUT_DIR, pageFont, library)
+const ehClient = EhClient.fromEnv()
+const publisher = new Publisher(library, thumbs, pageFont, () => ehClient)
 
 /** Constant-time compare, so the secret cannot be guessed a byte at a time. */
 function authorized(req: IncomingMessage): boolean {
@@ -130,6 +142,8 @@ const http = createServer((req, res) => {
       serveImage(url.pathname.slice("/images/".length), res)
       return
     }
+
+    if (await handleWeb(req, res, url, { auth: webAuth, library, thumbs, publisher })) return
 
     if (await oauth.handle(req, res, url)) return
 

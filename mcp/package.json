@@ -5,7 +5,7 @@
   "type": "module",
   "description": "NovelAI image generation as an MCP server, sharing the request builder with the Scripting app.",
   "scripts": {
-    "build": "esbuild stdio.ts http.ts backfill.ts backup.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outdir=dist --out-extension:.js=.mjs",
+    "build": "esbuild stdio.ts http.ts backfill.ts backup.ts webpass.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outdir=dist --out-extension:.js=.mjs && esbuild web/app.tsx --bundle --format=esm --target=es2020 --jsx=automatic --jsx-import-source=preact --minify --outfile=dist/web/app.js",
     "start": "node dist/stdio.mjs",
     "serve": "node dist/http.mjs",
     "test": "npm run build && node test_server.mjs"
@@ -18,6 +18,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "preact": "10.29.8"
   }
 }

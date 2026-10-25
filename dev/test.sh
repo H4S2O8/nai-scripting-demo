@@ -21,6 +21,12 @@ if [ -d mcp/node_modules ]; then
   echo "== studio: projects, pages, shots, verdicts =="
   node dev/test_studio.mjs
   echo
+  echo "== review web page: access, sessions, API =="
+  node dev/test_web.mjs
+  echo
+  echo "== publishing to E-Hentai =="
+  node dev/test_publish.mjs
+  echo
   echo "== picture-and-text pages =="
   ./mcp/fetch-font.sh
   node dev/test_page.mjs

@@ -294,6 +294,31 @@ NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
 
 数据库结构用 `PRAGMA user_version` 升级：v2 只加表加列，线上库原地升级，老图的数据不动。
 
+### 审阅网页（`/app`，`mcp/web/` + `webapi.ts`）
+
+给人用的审阅页，和 MCP 工具读写同一份数据：网页上选的图就是 agent 下次 `novelai_review` 看到的选择，
+网页上的留言会出现在 agent 的待办里。
+
+- 项目列表（进度、待选图、未处理意见）→ 小说按章排开页面缩略图 / 图集按镜头 → 单页：
+  这页实际排出来的左图右文预览、候选网格（点哪张就用哪张预览）、选中 / 淘汰 / 恢复、给 agent 留言。
+  不属于任何镜头的图单独列在项目页「其他图片」里。电脑上可用 ← → 切候选、P 选中、X 淘汰、[ ] 翻页。
+- **登录**：三种任一即可，否则一律拒绝。
+  - Cloudflare Access：设置 `CF_ACCESS_TEAM`（团队名）和 `CF_ACCESS_AUD`（应用的 AUD tag），服务端会
+    校验 `Cf-Access-Jwt-Assertion` 的签名、受众、签发方和过期时间。
+  - 在 `/app/login` 登录一次，换一个 90 天的签名 cookie（HttpOnly、Secure、SameSite=Strict）。
+    设置了 `NOVELAI_WEB_PASSWORD_HASH` 时用网页密码登录，没设置时用 `MCP_AUTH_TOKEN`。
+    同一地址 10 分钟内错 10 次会被锁。改密码（只存 scrypt 哈希，密码从 stdin 读，不进命令行）：
+    `printf '%s' '新密码' | ssh HK 'cd /opt/novelai-mcp/mcp && node dist/webpass.mjs && systemctl restart novelai-mcp'`。
+    改完所有已登录的网页会话都会失效；MCP 客户端不受影响。
+  - `Authorization: Bearer <MCP_AUTH_TOKEN>`，给脚本用。
+- 所有写接口要带 `x-nai-app: 1` 请求头（防 CSRF）。
+- **缩略图在 R2 上**：一张图第一次被看到时生成 512px JPEG，上传到 `<前缀>-thumbs/`，把链接记进库，之后
+  `/api/thumb/<id>` 直接 302 到 CDN。HK 不转发缩略图流量。没配 R2 的部署（本地预览）直接返回 JPEG；
+  配了 R2 但上传失败就报错。
+- 排版预览由服务端用 `novelai_compose_page` 同一套引擎渲染，缓存在 `$NOVELAI_OUTPUT_DIR/cache`（上限 150MB）。
+- 前端是 Preact，`npm run build` 一起打包成 `dist/web/app.js`。`mcp/tsconfig.json` 固定了 JSX 设置，
+  否则 esbuild 会往上找到别处的 tsconfig。
+
 ### 图库（`mcp/library.ts`）
 
 每张生成的图都会入库，记录完整参数（prompt、负面、角色 caption 和坐标、模型、尺寸、步数、

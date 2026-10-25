@@ -76,6 +76,8 @@ export type ImageRow = Omit<NewImage, "project" | "tags" | "note" | "shotId"> & 
   favorite: boolean
   /** When the pixels were deleted from R2 (rejected and expired); the record stays. */
   purgedAt: string | null
+  /** Public link to a small JPEG of the image on R2, made the first time it is viewed. */
+  thumbUrl: string | null
 }
 
 export type SearchFilters = {
@@ -212,6 +214,40 @@ CREATE TABLE IF NOT EXISTS feedback (
 CREATE INDEX IF NOT EXISTS feedback_open ON feedback(project_id, resolved_at);
 `
 
+/** Tables added by schema version 4: publishing to E-Hentai. */
+const PUBLISH_SCHEMA = `
+CREATE TABLE IF NOT EXISTS mascots (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  url        TEXT NOT NULL,
+  width      INTEGER NOT NULL,
+  height     INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  removed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS publications (
+  id         INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  eh_job_id  TEXT,
+  state      TEXT NOT NULL,
+  progress   TEXT NOT NULL DEFAULT '',
+  error      TEXT,
+  items      TEXT NOT NULL,
+  settings   TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS publications_project ON publications(project_id, created_at);
+CREATE TABLE IF NOT EXISTS page_renders (
+  page_id    INTEGER NOT NULL,
+  image_id   INTEGER NOT NULL,
+  digest     TEXT NOT NULL,
+  url        TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (page_id, image_id, digest)
+) WITHOUT ROWID;
+`
+
 /** Trimmed, inner whitespace collapsed; empty is refused rather than stored. */
 export function cleanName(raw: string, what: string): string {
   const name = String(raw ?? "").trim().replace(/\s+/g, " ")
@@ -250,8 +286,11 @@ export class Library {
   /**
    * Schema versions, by PRAGMA user_version. 0/1 is the image library as first
    * deployed; 2 adds the studio — project kinds, characters, chapters and
-   * pages, shots, candidate verdicts and review feedback. Each step only adds
-   * columns and tables, so a live database upgrades in place.
+   * pages, shots, candidate verdicts and review feedback; 3 the R2 thumbnail
+   * link; 4 publishing to E-Hentai — the mascot library, publications, the
+   * composed novel pages kept on R2, and each project's last publish settings.
+   * Each step only adds columns and tables, so a live database upgrades in
+   * place.
    */
   private migrate() {
     const version = this.db.pragma("user_version", { simple: true }) as number
@@ -273,6 +312,21 @@ export class Library {
         add("images", "purged_at", "TEXT")
         this.db.exec("CREATE INDEX IF NOT EXISTS images_shot ON images(shot_id, verdict)")
         this.db.pragma("user_version = 2")
+      })()
+    }
+    if (version < 3) {
+      this.db.transaction(() => {
+        const has = (this.db.prepare("SELECT 1 FROM pragma_table_info('images') WHERE name = 'thumb_url'").get() ?? null) !== null
+        if (!has) this.db.exec("ALTER TABLE images ADD COLUMN thumb_url TEXT")
+        this.db.pragma("user_version = 3")
+      })()
+    }
+    if (version < 4) {
+      this.db.transaction(() => {
+        this.db.exec(PUBLISH_SCHEMA)
+        const has = (this.db.prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'publish'").get() ?? null) !== null
+        if (!has) this.db.exec("ALTER TABLE projects ADD COLUMN publish TEXT NOT NULL DEFAULT '{}'")
+        this.db.pragma("user_version = 4")
       })()
     }
   }
@@ -345,6 +399,10 @@ export class Library {
     })()
   }
 
+  setThumb(id: number, url: string) {
+    this.db.prepare("UPDATE images SET thumb_url = ? WHERE id = ?").run(url, id)
+  }
+
   /** Mark keys as living only in the Mac backup now: no public link. */
   archive(keys: string[]): number {
     const mark = this.db.prepare("UPDATE images SET stored = 'archive', url = NULL WHERE key = ? AND stored <> 'archive'")
@@ -391,6 +449,7 @@ export class Library {
       verdict: r.verdict ?? null,
       favorite: r.favorite === 1,
       purgedAt: r.purged_at ?? null,
+      thumbUrl: r.thumb_url ?? null,
     }))
   }
 

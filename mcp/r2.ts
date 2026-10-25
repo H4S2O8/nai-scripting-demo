@@ -116,12 +116,13 @@ export async function putObject(
   key: string,
   body: Buffer,
   contentType: string,
+  cacheControl?: string,
 ): Promise<void> {
   const endpoint = `https://${config.accountId}.r2.cloudflarestorage.com/${bucket}/${encodeURI(key)}`
   const response = await client(config).fetch(endpoint, {
     method: "PUT",
     body,
-    headers: { "content-type": contentType },
+    headers: { "content-type": contentType, ...(cacheControl ? { "cache-control": cacheControl } : {}) },
   })
   if (!response.ok) throw new Error(`R2 写入 ${bucket}/${key} 失败：${response.status} ${await response.text()}`)
 }
