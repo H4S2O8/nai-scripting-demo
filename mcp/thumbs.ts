@@ -144,7 +144,7 @@ export class Thumbs {
   async page(
     image: ImageRow,
     page: { id: number; text: string; cont: boolean },
-    options: { title?: string; pageNumber?: string; background?: string; textColor?: string },
+    options: { pageNumber?: string; background?: string; textColor?: string },
     width: number,
   ): Promise<Buffer> {
     const w = Math.min(2400, Math.max(320, Math.round(width / 64) * 64))

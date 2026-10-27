@@ -249,7 +249,6 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
       image,
       detail.page,
       {
-        title: detail.project,
         pageNumber: String(detail.page.number),
         background: detail.layout.background,
         textColor: detail.layout.textColor,

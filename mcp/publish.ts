@@ -329,7 +329,6 @@ export class Publisher {
     const options = {
       text: detail.page.text,
       continued: detail.page.cont,
-      title: detail.project,
       pageNumber: String(detail.page.number),
       background: detail.layout.background,
       textColor: detail.layout.textColor,

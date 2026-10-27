@@ -160,7 +160,7 @@ if (!existsSync(font)) {
   const actx = art.getContext("2d")
   actx.fillStyle = "#ff0000"
   actx.fillRect(0, 0, 400, 600)
-  const page = await P.composePage(art.toBuffer("image/png"), { text: "雨还在下。\n她没有回头。", title: "末班车", pageNumber: "3" }, font)
+  const page = await P.composePage(art.toBuffer("image/png"), { text: "雨还在下。\n她没有回头。", pageNumber: "3" }, font)
   check("the page is the picture plus a column no wider than it",
         page.width > 400 && page.width <= 800 && page.height === 600, `${page.width}x${page.height}`)
   const { loadImage } = await import(join(root, "mcp", "node_modules", "@napi-rs", "canvas", "index.js"))
@@ -171,6 +171,8 @@ if (!existsSync(font)) {
   const px = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3))
   check("the picture is on the left, untouched", JSON.stringify(px(200, 300)) === "[255,0,0]")
   check("the background is black by default", JSON.stringify(px(790, 5)) === "[0,0,0]")
+  const above = ctx.getImageData(400, 0, page.width - 400, Math.floor(page.fit.marginTop)).data
+  check("nothing is drawn above the text", !above.some((v, i) => i % 4 !== 3 && v !== 0))
   const column = ctx.getImageData(400, 0, 400, 600).data
   let lit = 0
   for (let i = 0; i < column.length; i += 4) if (column[i] > 200 && column[i + 1] > 200 && column[i + 2] > 200) lit++

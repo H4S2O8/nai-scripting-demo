@@ -960,7 +960,6 @@ function registerPageTool(server: McpServer) {
         text: z.string().max(5000).describe("The original text for the right-hand side. One paragraph per line."),
         background: z.string().optional().describe("Page colour, #rgb or #rrggbb. Default #000000."),
         textColor: z.string().optional().describe("Text colour, #rgb or #rrggbb. Default #ffffff."),
-        title: z.string().optional().describe("Small header above the text, e.g. the book title."),
         pageNumber: z.string().optional().describe("Shown centred under the text as — 3 —."),
         continued: z
           .boolean()

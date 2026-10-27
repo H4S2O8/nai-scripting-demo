@@ -216,7 +216,6 @@ export type PageOptions = {
   text: string
   background?: string
   textColor?: string
-  title?: string
   pageNumber?: string
   continued?: boolean
   indent?: boolean
@@ -338,7 +337,6 @@ export async function composePage(image: Buffer, options: PageOptions, fontPath:
   ctx.font = `${small}px "${FAMILY}"`
   ctx.fillStyle = muted(ink, paper)
   ctx.textAlign = "center"
-  if (options.title?.trim()) ctx.fillText(options.title.trim(), centre, fit.marginTop / 2 - small / 2)
   if (options.pageNumber?.trim()) {
     ctx.fillText(`— ${options.pageNumber.trim()} —`, centre, height - fit.marginBottom / 2 - small / 2)
   }
