@@ -42,7 +42,17 @@ export type PublishSettings = {
   acceptSiteTerms?: boolean
   /** A novel with side stories: add a page-number table of contents to the description. Default on. */
   toc?: boolean
+  /**
+   * Add side stories to a gallery already published on the site, as a new
+   * version of it (its pages and cover stay), instead of making a new gallery.
+   * The public gallery link; title, cover and the rest stay as they are there.
+   */
+  appendTo?: string | null
+  /** Appending: the new pages include GURO; the gallery must already be a GURO one. */
+  containsGuro?: boolean
 }
+
+const GALLERY_URL = /^https:\/\/e-hentai\.org\/g\/(\d+)\/[0-9a-f]+\/?$/
 
 /** One file of a novel's upload: a composed page, or the title page that opens a side story. */
 type Sheet = { url: string; route: string; kind: "page" | "title" }
@@ -312,9 +322,18 @@ export class Publisher {
   start(project: string, items: Item[], settings: PublishSettings): number {
     const row = this.projectId(project)
     this.client()
-    if (!settings.title?.trim()) throw new Error("要有标题")
-    if (!["ai", "ai_guro"].includes(settings.coverStyle)) throw new Error("封面样式只能是 ai 或 ai_guro")
-    if (settings.coverStyle === "ai_guro" && !settings.guroGender) throw new Error("GURO 投稿要指定受伤者性别")
+    if (settings.appendTo) {
+      if (row.kind !== "novel") throw new Error("追加到已发布画廊目前只给小说补番外用")
+      if (!GALLERY_URL.test(settings.appendTo.trim())) throw new Error("已发布画廊的链接要像 https://e-hentai.org/g/1234567/abcdef1234/")
+      if (settings.acceptSiteTerms !== true) throw new Error("追加会上传到网站，要先勾选同意 E-Hentai 的上传条款")
+      const routes = new Map(new Studio(this.library()).listPages(row.name).map((p) => [p.id, p.route]))
+      const main = items.filter((item) => !routes.get(item.pageId ?? 0))
+      if (main.length) throw new Error(`追加只放番外页；正文已经在画廊里了（选中了 ${main.length} 页正文）`)
+    } else {
+      if (!settings.title?.trim()) throw new Error("要有标题")
+      if (!["ai", "ai_guro"].includes(settings.coverStyle)) throw new Error("封面样式只能是 ai 或 ai_guro")
+      if (settings.coverStyle === "ai_guro" && !settings.guroGender) throw new Error("GURO 投稿要指定受伤者性别")
+    }
     if (items.length === 0) throw new Error("没有选任何图")
     if (items.length > 1999) throw new Error("一个画廊最多 1999 张")
     const allowed = new Map(this.candidates(row.name).filter((c) => !c.blocked).map((c) => [`${c.pageId ?? 0}:${c.imageId}`, c]))
@@ -353,6 +372,7 @@ export class Publisher {
       } finally {
         this.composing.delete(id)
       }
+      if (settings.appendTo) return this.append(id, project, composed, settings)
       const { sheets, titles } = await this.withTitlePages(project, composed)
       urls = sheets.map((sheet) => sheet.url)
       const toc = settings.toc === false ? "" : tableOfContents(sheets, titles)
@@ -382,6 +402,63 @@ export class Publisher {
       cover_spec: settings.coverSpec ?? null,
     })
     this.mark(id, { ehJobId: String(result.json?.id ?? ""), progress: "" })
+  }
+
+  /**
+   * Side stories onto a published gallery: the publisher binds the gallery as
+   * this project's collection, checks it still has the pages we count from,
+   * and later makes a new version of it with these sheets at the end.
+   */
+  private async append(
+    id: number,
+    project: string,
+    composed: { url: string; width: number; height: number; pageId: number }[],
+    settings: PublishSettings,
+  ) {
+    this.mark(id, { state: "preparing", progress: "核对已发布的画廊" })
+    const eh = this.client()
+    const name = `nai-${this.projectId(project).id}`
+    const target = settings.appendTo!.trim()
+    const gid = (url: string | null | undefined) => url?.match(GALLERY_URL)?.[1] ?? null
+    let info: any = null
+    try {
+      info = (await eh.call("get_collection", { collection_name: name, refresh: true })).json
+    } catch (error) {
+      if (!/未注册/.test(error instanceof Error ? error.message : String(error))) throw error
+    }
+    if (!info || gid(info.gallery_url) !== gid(target)) {
+      if (info?.draft_id) {
+        throw new Error(`这个项目正在往 ${info.gallery_url} 追加，那份更新草稿（${info.draft_url}）还没发布；先在网站上发布或删掉它`)
+      }
+      // Binding again checks the link is this gallery or a newer version of it, and refuses another gallery.
+      info = (await eh.call("register_collection", {
+        gallery_url: target, collection_name: name, guro_gender: settings.guroGender ?? null,
+      })).json
+    }
+    const existing: number = info.draft_file_count ?? info.file_count
+    const { sheets, titles } = await this.withTitlePages(project, composed)
+    const lines = contentsLines(sheets, titles, existing + 1)
+    // The first side stories on a gallery of the main story alone: the contents start with it.
+    if (this.appendDefaults(project, id).publishedRoutes.length === 0) lines.unshift(`正文 p.2${existing > 2 ? "–" + existing : ""}`)
+    const result = await eh.call("append_to_collection", {
+      image_urls: sheets.map((sheet) => sheet.url),
+      collection_name: name,
+      accept_site_terms: true,
+      contains_guro: settings.containsGuro === true,
+      existing_count: existing,
+      toc_lines: settings.toc === false ? [] : lines,
+    })
+    this.mark(id, { state: "preparing", ehJobId: String(result.json?.id ?? ""), progress: "" })
+  }
+
+  /** What the publish page starts from when appending: the gallery to add to, and the side stories uploaded before. */
+  appendDefaults(project: string, except?: number) {
+    const row = this.projectId(project)
+    const pages = new Map(new Studio(this.library()).listPages(row.name).map((p) => [p.id, p.route]))
+    const earlier = this.publications(row.name).filter((p) => p.state !== "failed" && p.id !== except)
+    const routes = new Set(earlier.flatMap((p) => p.items.map((item) => pages.get(item.pageId ?? 0) ?? "")).filter(Boolean))
+    const linked = earlier.find((p) => p.settings.galleryUrl)?.settings.galleryUrl ?? null
+    return { galleryUrl: linked, publishedRoutes: [...routes] }
   }
 
   /** A novel page composed with its picked picture, on R2 — made once per page, picture and text. */
@@ -457,12 +534,13 @@ export class Publisher {
       }
     }
     const kind = (this.db.prepare("SELECT kind FROM projects WHERE id = ?").get(this.row(id).project_id) as any).kind
-    return { ...view, job, jobError, bar: this.progress(id, kind, view.state, view.ehJobId, job) }
+    return { ...view, job, jobError, bar: this.progress(id, kind, view.state, view.ehJobId, job, !!view.settings.appendTo) }
   }
 
   /** The bar for a running publication; null once it waits on the person or has ended. */
-  private progress(id: number, kind: string, state: string, ehJobId: string | null, job: any): Progress | null {
-    const steps = [...(kind === "novel" ? ["合成页面"] : []), "下载图片", "生成封面", "上传草稿"]
+  private progress(id: number, kind: string, state: string, ehJobId: string | null, job: any, append: boolean): Progress | null {
+    // Appending keeps the gallery's cover: there is none to draw.
+    const steps = [...(kind === "novel" ? ["合成页面"] : []), "下载图片", ...(append ? [] : ["生成封面"]), "上传草稿"]
     const at = (step: string, label: string, done?: number, total?: number, unit?: Progress["unit"]): Progress => ({
       steps, step: steps.indexOf(step), label, ...(total ? { done, total, unit } : {}),
     })
@@ -476,8 +554,10 @@ export class Publisher {
       case "queued":
         return at("下载图片", "排队等待 E-Hentai 服务")
       case "downloading":
-        return at("下载图片", `下载第 ${Math.min((job.downloaded ?? 0) + 1, job.artwork_count)}/${job.artwork_count} 张`,
-                  job.downloaded ?? 0, job.artwork_count, "image")
+      {
+        const total = job.artwork_count ?? job.requested_count
+        return at("下载图片", `下载第 ${Math.min((job.downloaded ?? 0) + 1, total)}/${total} 张`, job.downloaded ?? 0, total, "image")
+      }
       case "rendering_cover":
         return at("生成封面", "生成封面")
       case "uploading":
@@ -528,6 +608,11 @@ export class Publisher {
     if (!/^https:\/\/(e-hentai|exhentai)\.org\/g\/\d+\/[0-9a-f]+\/?$/.test(galleryUrl.trim())) {
       throw new Error("画廊链接要像 https://e-hentai.org/g/1234567/abcdef1234/")
     }
-    return (await this.client().call("apply_required_tags", { job_id: this.job(id), gallery_url: galleryUrl.trim() })).json
+    const result = (await this.client().call("apply_required_tags", { job_id: this.job(id), gallery_url: galleryUrl.trim() })).json
+    const p = this.row(id)
+    this.db
+      .prepare("UPDATE publications SET settings = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify({ ...JSON.parse(p.settings), galleryUrl: galleryUrl.trim().replace(/\/?$/, "/") }), now(), id)
+    return result
   }
 }

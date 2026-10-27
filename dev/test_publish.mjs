@@ -80,6 +80,7 @@ function image(project, shotId, extra = {}) {
 }
 
 const calls = []
+const collections = new Map()
 let job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
 const eh = {
   async call(name, args) {
@@ -87,6 +88,17 @@ const eh = {
     if (name === "preview_cover") return { json: { width: 300 }, image: Buffer.from([0xff, 0xd8, 0xff]) }
     if (name === "prepare_gallery") return { json: { id: "job" + calls.length, state: "queued" }, image: null }
     if (name === "get_job") return { json: { id: args.job_id, ...job }, image: null }
+    if (name === "get_collection") {
+      const c = collections.get(args.collection_name)
+      if (!c) throw new Error("合集未注册，请先调用 register_collection")
+      return { json: c, image: null }
+    }
+    if (name === "register_collection") {
+      const c = { name: args.collection_name, gallery_url: args.gallery_url, file_count: 62, draft_id: null, draft_url: null, draft_file_count: null }
+      collections.set(args.collection_name, c)
+      return { json: c, image: null }
+    }
+    if (name === "append_to_collection") return { json: { id: "append" + calls.length, state: "queued" }, image: null }
     return { json: { ok: true, name }, image: null }
   },
 }
@@ -281,6 +293,64 @@ console.log("side stories")
   await settled(pub.start("番外书", picks.slice(0, 1), { title: "只有正文", coverStyle: "ai" }))
   const plain = calls.find((x) => x.name === "prepare_gallery").args
   check("the main story alone is just its pages", plain.image_urls.length === 1 && plain.description === "")
+}
+
+console.log("side stories onto a published gallery")
+{
+  st.createProject({ name: "补番外", kind: "novel" })
+  st.setChapter("补番外", { chapter: 1, text: "正文。" })
+  st.setChapter("补番外", { chapter: 2, title: "如果", route: "IF 1", text: "IF 1 第一页。\n\n" + "很长的一段。".repeat(60) })
+  st.setChapter("补番外", { chapter: 3, route: "IF 2", text: "IF 2 的一页。" })
+  const picks = st.listPages("补番外").map((page) => {
+    const shot = st.setShot({ project: "补番外", pageId: page.id, spec: { prompt: "p" } })
+    const img = image("补番外", shot.id)
+    st.verdict([img], "pick", "human")
+    return { pageId: page.id, imageId: img, route: page.route }
+  })
+  const only = (route) => picks.filter((x) => x.route === route).map(({ pageId, imageId }) => ({ pageId, imageId }))
+  const url = "https://e-hentai.org/g/3600001/abcdef1234/"
+  const append = { title: "", coverStyle: "ai", appendTo: url, acceptSiteTerms: true }
+  check("a fresh project has no side stories uploaded", pub.appendDefaults("补番外").publishedRoutes.length === 0)
+  check("appending refuses main-story pages", await rejects(() => pub.start("补番外", only(""), append), /只放番外页/))
+  check("appending needs the site terms", await rejects(() => pub.start("补番外", only("IF 1"), { ...append, acceptSiteTerms: false }), /上传条款/))
+  check("appending needs a gallery link", await rejects(() => pub.start("补番外", only("IF 1"), { ...append, appendTo: "https://example.com/g/1/a/" }), /画廊的链接/))
+  check("a gallery project cannot append yet", await rejects(() => pub.start("画集", [{ imageId: a1 }], { ...append }), /只给小说/))
+
+  calls.length = 0
+  const first = pub.start("补番外", only("IF 1"), append)
+  await settled(first)
+  const register = calls.find((x) => x.name === "register_collection")
+  check("an unknown gallery is bound as this project's collection", register?.args.gallery_url === url && /^nai-\d+$/.test(register.args.collection_name))
+  const sent = calls.find((x) => x.name === "append_to_collection").args
+  const n1 = only("IF 1").length
+  check("the side story's title page, then its pages",
+        sent.image_urls.length === n1 + 1 && sent.image_urls[0].includes("pages/title-") &&
+        !sent.image_urls.slice(1).some((u) => u.includes("pages/title-")), JSON.stringify(sent.image_urls))
+  check("the page count it relies on goes along", sent.existing_count === 62)
+  check("the contents continue the gallery's pages",
+        JSON.stringify(sent.toc_lines) === JSON.stringify(["正文 p.2–62", `IF 1「如果」p.63–${63 + n1}`]), JSON.stringify(sent.toc_lines))
+  check("terms and GURO go as chosen", sent.accept_site_terms === true && sent.contains_guro === false)
+  job = { state: "downloading", downloaded: 1, requested_count: 3 }
+  const bar = (await pub.status(first)).bar
+  check("an append has no cover step, and counts its downloads",
+        JSON.stringify(bar.steps) === JSON.stringify(["合成页面", "下载图片", "上传草稿"]) && bar.total === 3, JSON.stringify(bar))
+  job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
+
+  const defaults = pub.appendDefaults("补番外")
+  check("the side stories uploaded before are known", defaults.publishedRoutes.join() === "IF 1")
+  const collection = collections.get(register.args.collection_name)
+  Object.assign(collection, { draft_id: "900", draft_url: "https://upld.e-hentai.org/managegallery?ulgid=900", draft_file_count: 63 + n1 })
+  calls.length = 0
+  await settled(pub.start("补番外", only("IF 2"), append))
+  const second = calls.find((x) => x.name === "append_to_collection").args
+  check("the next side story goes onto the waiting draft without binding again", !calls.some((x) => x.name === "register_collection"))
+  check("the next side story numbers on after the draft, without the main story's line again",
+        second.image_urls.length === 2 && second.existing_count === 63 + n1 &&
+        JSON.stringify(second.toc_lines) === JSON.stringify([`IF 2 p.${64 + n1}–${65 + n1}`]), JSON.stringify(second))
+  const other = await settled(pub.start("补番外", only("IF 2"), { ...append, appendTo: "https://e-hentai.org/g/3600999/abcdef1234/" }))
+  check("another gallery while a draft waits is refused", /还没发布/.test(other.error ?? ""), JSON.stringify(other))
+  await pub.linkPublished(first, "https://e-hentai.org/g/3600002/abcdef1234")
+  check("a linked gallery becomes the next default", pub.appendDefaults("补番外").galleryUrl === "https://e-hentai.org/g/3600002/abcdef1234/")
 }
 
 console.log("cover preview and mascots")

@@ -347,7 +347,10 @@ function Publication({ id, onChange }: { id: number; onChange: () => void }) {
   if (!data) return <div class="note"><p class="muted small">读取中…</p></div>
   const job = data.job
   const draft = () => {
-    if (!confirm(`把这 ${data.items.length} 张图和封面上传到 E-Hentai，作为你账号下的草稿（不会公开）。继续吗？`)) return
+    const ask = data.settings.appendTo
+      ? `在网站上给 ${data.settings.appendTo} 创建一个新版本草稿，把番外页接在最后（原来的页和封面保留，不会公开）。继续吗？`
+      : `把这 ${data.items.length} 张图和封面上传到 E-Hentai，作为你账号下的草稿（不会公开）。继续吗？`
+    if (!confirm(ask)) return
     act("draft", {}, "已开始上传草稿")
   }
   return (
@@ -359,7 +362,11 @@ function Publication({ id, onChange }: { id: number; onChange: () => void }) {
         <span>{data.items.length} 张</span>
       </div>
       <div class="body">
-        <strong>{data.settings.title}</strong>
+        {data.settings.appendTo ? (
+          <strong>补番外到 <a href={data.settings.appendTo} target="_blank" rel="noreferrer">{data.settings.appendTo}</a></strong>
+        ) : (
+          <strong>{data.settings.title}</strong>
+        )}
         {data.bar ? <JobProgress bar={data.bar} /> : null}
         {data.error ? <p class="err-text">{data.error}</p> : null}
         {job?.error ? <p class="err-text">{job.error}</p> : null}
@@ -391,6 +398,7 @@ export function Publish({ name }: { name: string }) {
   const [spec, setSpec] = useState<Spec>({})
   const [mascots, setMascots] = useState<any[]>([])
   const [busy, setBusy] = useState(false)
+  const [appending, setAppending] = useState(false)
 
   useEffect(() => {
     if (!data) return
@@ -398,9 +406,30 @@ export function Publish({ name }: { name: string }) {
     if (settings) return
     setItems(data.candidates)
     const saved = data.settings ?? {}
-    setSettings({ title: name, coverStyle: "ai", acceptSiteTerms: false, ...saved })
+    setSettings({ title: name, coverStyle: "ai", acceptSiteTerms: false, ...saved, appendTo: null })
     setSpec(saved.coverSpec ?? {})
   }, [data])
+
+  /**
+   * Appending side stories to the published gallery: only side-story pages,
+   * and by default the ones not uploaded before; the gallery's own title and
+   * cover stay, so those sections give way to the gallery link.
+   */
+  const switchMode = (append: boolean) => {
+    setAppending(append)
+    if (!append) {
+      setItems(data.candidates)
+      setSettings({ ...settings, appendTo: null })
+      return
+    }
+    const done = new Set<string>(data.appendDefaults.publishedRoutes)
+    setItems(data.candidates.map((c: Item) => ({ ...c, selected: !c.blocked && !!c.route && !done.has(c.route) })))
+    setSettings({
+      ...settings,
+      appendTo: settings.appendTo || data.appendDefaults.galleryUrl || "",
+      containsGuro: settings.coverStyle === "ai_guro",
+    })
+  }
 
   const novel = project?.kind === "novel"
   const chosen = items.filter((i) => i.selected && !i.blocked)
@@ -424,7 +453,7 @@ export function Publish({ name }: { name: string }) {
         items: chosen.map(({ imageId, pageId }) => ({ imageId, pageId })),
         settings: { ...settings, backgroundImageId, coverSpec: Object.keys(spec).length ? spec : null },
       })
-      showToast("开始准备：下载图片、生成封面（还没上传）")
+      showToast(appending ? "开始准备追加：合成番外页、核对原画廊（还没上传）" : "开始准备：下载图片、生成封面（还没上传）")
       reload()
     } catch (e: any) {
       showToast(e.message, true)
@@ -449,8 +478,8 @@ export function Publish({ name }: { name: string }) {
         ) : null}
         <div class="pick-list">
           {items.map((item, index) => (
-            <div class={"pick-row" + (item.blocked ? " blocked" : "")} key={`${item.pageId ?? 0}-${item.imageId}`}>
-              <input type="checkbox" checked={item.selected && !item.blocked} disabled={!!item.blocked} aria-label={`选择 ${item.label}`}
+            <div class={"pick-row" + (item.blocked || (appending && !item.route) ? " blocked" : "")} key={`${item.pageId ?? 0}-${item.imageId}`}>
+              <input type="checkbox" checked={item.selected && !item.blocked} disabled={!!item.blocked || (appending && !item.route)} aria-label={`选择 ${item.label}`}
                 onChange={(e) => setItems(items.map((it, i) => (i === index ? { ...it, selected: (e.target as HTMLInputElement).checked } : it)))} />
               {item.imageId ? <img src={thumb(item.imageId)} alt="" loading="lazy" /> : <span class="no-image" />}
               <div class="pick-label">
@@ -468,6 +497,47 @@ export function Publish({ name }: { name: string }) {
           ))}
         </div>
 
+        {novel && data.candidates.some((c: Item) => c.route) ? (
+          <div class="mode-switch" role="radiogroup" aria-label="发布方式">
+            <button class={appending ? "" : "on"} role="radio" aria-checked={!appending} onClick={() => switchMode(false)}>新画廊</button>
+            <button class={appending ? "on" : ""} role="radio" aria-checked={appending} onClick={() => switchMode(true)}>补番外到已发布的画廊</button>
+          </div>
+        ) : null}
+
+        {appending ? (
+          <>
+            <h2>2. 追加到哪个画廊</h2>
+            <p class="muted small">
+              在网站上给这个画廊出一个新版本：原来的页和封面保留，番外页接在最后；标题、封面沿用画廊里的。
+              上传后是一份更新草稿，你在网站上审完手动发布，新版本才替换旧版本。
+            </p>
+            <Field label="已发布画廊的链接" hint="旧版本的链接也行，会自动找到最新版本">
+              <input type="text" value={settings.appendTo ?? ""} placeholder="https://e-hentai.org/g/1234567/abcdef1234/"
+                onInput={(e) => set("appendTo", (e.target as HTMLInputElement).value)} />
+            </Field>
+            <label class="check">
+              <input type="checkbox" checked={settings.toc !== false} onChange={(e) => set("toc", (e.target as HTMLInputElement).checked)} />
+              在简介的目录里补上新番外从第几页开始
+            </label>
+            <label class="check">
+              <input type="checkbox" checked={settings.containsGuro === true} onChange={(e) => set("containsGuro", (e.target as HTMLInputElement).checked)} />
+              新页里有 GURO 内容（原画廊必须已经是 GURO 封面）
+            </label>
+            <label class="check">
+              <input type="checkbox" checked={settings.acceptSiteTerms === true} onChange={(e) => set("acceptSiteTerms", (e.target as HTMLInputElement).checked)} />
+              我同意 E-Hentai 的上传条款
+            </label>
+            <div class="actions">
+              <span class="small muted">准备只在服务器上合成和下载，不会上传。</span>
+              <span class="spacer" />
+              <button class="primary" disabled={busy || chosen.length === 0 || !settings.appendTo?.trim() || settings.acceptSiteTerms !== true} onClick={start}>
+                开始准备追加
+              </button>
+            </div>
+          </>
+        ) : null}
+
+        <div hidden={appending}>
         <h2>2. 投稿信息</h2>
         <Field label="标题" hint="会自动加上 [AI Generated]；GURO 会自动加 [GURO] 前缀">
           <input type="text" value={settings.title} maxLength={450} onInput={(e) => set("title", (e.target as HTMLInputElement).value)} />
@@ -542,6 +612,7 @@ export function Publish({ name }: { name: string }) {
           <button class="primary" disabled={busy || chosen.length === 0 || !settings.title?.trim() || (guro && !settings.guroGender)} onClick={start}>
             开始准备
           </button>
+        </div>
         </div>
 
         <h2>发布记录</h2>
