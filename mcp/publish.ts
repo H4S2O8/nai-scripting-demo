@@ -55,6 +55,20 @@ export type Candidate = {
 const now = () => new Date().toISOString()
 const MASCOT_MIN_SIDE = 100
 
+/**
+ * Where a running publication is, for a progress bar: which of the steps, and
+ * how far through it. done/total are absent when the step cannot be measured
+ * (drawing the cover, the site checking the upload).
+ */
+export type Progress = {
+  steps: string[]
+  step: number
+  label: string
+  done?: number
+  total?: number
+  unit?: "page" | "image" | "byte"
+}
+
 /** Puts a file somewhere the publisher can download it from, and says where. */
 export type Store = (name: string, body: Buffer, contentType: string) => Promise<string>
 
@@ -68,6 +82,9 @@ export const r2Store: Store = async (name, body, contentType) => {
 }
 
 export class Publisher {
+  /** Pages composed so far, per publication; only ever filled while this process composes them. */
+  private composing = new Map<number, { done: number; total: number }>()
+
   constructor(
     private library: () => Library,
     private thumbs: Thumbs,
@@ -294,9 +311,14 @@ export class Publisher {
   private async prepare(id: number, project: string, kind: string, items: Item[], settings: PublishSettings) {
     const urls: string[] = []
     if (kind === "novel") {
-      for (const [index, item] of items.entries()) {
-        this.mark(id, { progress: `合成第 ${index + 1}/${items.length} 页` })
-        urls.push(await this.composedPage(project, item.pageId!, item.imageId))
+      try {
+        for (const [index, item] of items.entries()) {
+          this.composing.set(id, { done: index, total: items.length })
+          this.mark(id, { progress: `合成第 ${index + 1}/${items.length} 页` })
+          urls.push(await this.composedPage(project, item.pageId!, item.imageId))
+        }
+      } finally {
+        this.composing.delete(id)
       }
     } else {
       for (const item of items) urls.push(this.backgroundUrl(item.imageId))
@@ -358,7 +380,37 @@ export class Publisher {
         jobError = error instanceof Error ? error.message : String(error)
       }
     }
-    return { ...view, job, jobError }
+    const kind = (this.db.prepare("SELECT kind FROM projects WHERE id = ?").get(this.row(id).project_id) as any).kind
+    return { ...view, job, jobError, bar: this.progress(id, kind, view.state, view.ehJobId, job) }
+  }
+
+  /** The bar for a running publication; null once it waits on the person or has ended. */
+  private progress(id: number, kind: string, state: string, ehJobId: string | null, job: any): Progress | null {
+    const steps = [...(kind === "novel" ? ["合成页面"] : []), "下载图片", "生成封面", "上传草稿"]
+    const at = (step: string, label: string, done?: number, total?: number, unit?: Progress["unit"]): Progress => ({
+      steps, step: steps.indexOf(step), label, ...(total ? { done, total, unit } : {}),
+    })
+    if (state === "composing") {
+      const live = this.composing.get(id)
+      if (!live) return at("合成页面", "合成停在了半路（服务重启过），请重新开始准备")
+      return at("合成页面", `合成第 ${Math.min(live.done + 1, live.total)}/${live.total} 页`, live.done, live.total, "page")
+    }
+    if (state === "preparing" && !ehJobId) return at("下载图片", "交给 E-Hentai 服务")
+    switch (job?.state) {
+      case "queued":
+        return at("下载图片", "排队等待 E-Hentai 服务")
+      case "downloading":
+        return at("下载图片", `下载第 ${Math.min((job.downloaded ?? 0) + 1, job.artwork_count)}/${job.artwork_count} 张`,
+                  job.downloaded ?? 0, job.artwork_count, "image")
+      case "rendering_cover":
+        return at("生成封面", "生成封面")
+      case "uploading":
+        if (!job.upload_total) return at("上传草稿", "开始上传")
+        if (job.upload_bytes >= job.upload_total) return at("上传草稿", "已全部发出，等 E-Hentai 收下并核对页序")
+        return at("上传草稿", "上传到 E-Hentai", job.upload_bytes, job.upload_total, "byte")
+      default:
+        return null
+    }
   }
 
   private job(id: number): string {

@@ -254,6 +254,24 @@ button.small { min-height: 32px; padding: 4px 10px; font-size: 13px; }
 }
 .cover-preview img { cursor: default; }
 .editor details { margin: 0 0 10px; }
+/* A running publication: its steps, then a bar for the current one. */
+.job-progress { margin: 10px 0 4px; }
+.job-progress .steps { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 0 0 8px; padding: 0; font-size: 12px; color: var(--muted); }
+.job-progress .steps li::before { content: "○ "; }
+.job-progress .steps li.done { color: var(--pick); }
+.job-progress .steps li.done::before { content: "✓ "; }
+.job-progress .steps li.now { color: var(--text); font-weight: 600; }
+.job-progress .steps li.now::before { content: "● "; color: var(--accent); }
+.job-progress .track { position: relative; height: 8px; border-radius: 4px; overflow: hidden; background: var(--panel-2); }
+.job-progress .fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.6s ease; }
+.job-progress .fill.busy { position: absolute; width: 30%; animation: job-busy 1.4s ease-in-out infinite; }
+@keyframes job-busy { from { left: -30%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .job-progress .fill { transition: none; }
+  .job-progress .fill.busy { animation: none; left: 0; width: 100%; opacity: 0.35; }
+}
+.job-progress p { margin: 6px 0 0; }
+
 .ready-cover { display: block; max-width: 260px; width: 100%; border-radius: 6px; margin: 8px 0; border: 1px solid var(--line); }
 
 /* A newer front end is on the server: one tap reloads. */

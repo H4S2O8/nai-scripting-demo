@@ -65,6 +65,7 @@ const dir = mkdtempSync(join(tmpdir(), "nai-publish-"))
 const lib = new L.Library(join(dir, "library.db"))
 const st = new S.Studio(lib)
 let n = 0
+let storeGate = null
 /** An image on "R2", with its file on this server's disk so pages can be composed. */
 function image(project, shotId, extra = {}) {
   n++
@@ -79,17 +80,19 @@ function image(project, shotId, extra = {}) {
 }
 
 const calls = []
+let job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
 const eh = {
   async call(name, args) {
     calls.push({ name, args })
     if (name === "preview_cover") return { json: { width: 300 }, image: Buffer.from([0xff, 0xd8, 0xff]) }
     if (name === "prepare_gallery") return { json: { id: "job" + calls.length, state: "queued" }, image: null }
-    if (name === "get_job") return { json: { id: args.job_id, state: "prepared", cover: { preview_url: "https://x/c.png" } }, image: null }
+    if (name === "get_job") return { json: { id: args.job_id, ...job }, image: null }
     return { json: { ok: true, name }, image: null }
   },
 }
 const stored = []
 const store = async (name, body, type) => {
+  if (storeGate) await storeGate
   stored.push({ name, bytes: body.length, type })
   return `https://preview.example/nai-${name}`
 }
@@ -198,6 +201,46 @@ console.log("a novel uploads its composed pages")
   await settled(pub.start("小说", picks, { title: "雨夜 2", coverStyle: "ai" }))
   check("a second attempt reuses the composed page", stored.length === 1)
   check("a blocked page cannot be smuggled in", await rejects(() => pub.start("小说", [{ pageId: pages[1].id, imageId: 0 }], good), /不能上传/))
+}
+
+console.log("progress")
+{
+  const id = pub.publications("画集")[0].id
+  job = { state: "prepared" }
+  check("nothing to show once prepared: it waits on the person", (await pub.status(id)).bar === null)
+  job = { state: "downloading", downloaded: 2, artwork_count: 3 }
+  let b = (await pub.status(id)).bar
+  check("a gallery has no compose step", JSON.stringify(b.steps) === JSON.stringify(["下载图片", "生成封面", "上传草稿"]))
+  check("downloading counts images", b.step === 0 && b.done === 2 && b.total === 3 && b.unit === "image", JSON.stringify(b))
+  job = { state: "rendering_cover" }
+  b = (await pub.status(id)).bar
+  check("the cover cannot be measured", b.step === 1 && b.total === undefined)
+  job = { state: "uploading", upload_bytes: 5_000_000, upload_total: 20_000_000 }
+  b = (await pub.status(id)).bar
+  check("uploading counts bytes", b.step === 2 && b.done === 5_000_000 && b.total === 20_000_000 && b.unit === "byte")
+  job = { state: "uploading", upload_bytes: 20_000_000, upload_total: 20_000_000 }
+  b = (await pub.status(id)).bar
+  check("all bytes sent: waiting on the site, unmeasured", b.total === undefined && /核对/.test(b.label))
+  job = { state: "draft_ready" }
+  check("a ready draft has no bar", (await pub.status(id)).bar === null)
+  job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
+
+  const picks = pub.candidates("小说").filter((c) => c.selected).map(({ pageId, imageId }) => ({ pageId, imageId }))
+  // Forget the composed pages so this attempt composes, and hold it at the upload to R2.
+  lib.handle.prepare("DELETE FROM page_renders").run()
+  let open
+  storeGate = new Promise((resolve) => (open = resolve))
+  const novel = pub.start("小说", picks, { title: "雨夜 3", coverStyle: "ai", description: "fresh" })
+  await new Promise((r) => setTimeout(r, 50))
+  b = (await pub.status(novel)).bar
+  check("a novel starts with composing its pages", b && b.steps[0] === "合成页面" && b.step === 0 && b.unit === "page" &&
+        b.total === picks.length, JSON.stringify(b))
+  open()
+  storeGate = null
+  await settled(novel)
+  lib.handle.prepare("UPDATE publications SET state = 'composing', eh_job_id = NULL WHERE id = ?").run(novel)
+  b = (await pub.status(novel)).bar
+  check("composing that this process is not doing says it stopped", /重新开始准备/.test(b.label) && b.total === undefined)
 }
 
 console.log("cover preview and mascots")

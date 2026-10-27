@@ -266,6 +266,60 @@ function links(job: any): [string, string][] {
   return out
 }
 
+const mb = (bytes: number) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`
+
+function duration(seconds: number) {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} 秒`
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`
+  return `${(seconds / 3600).toFixed(1)} 小时`
+}
+
+/**
+ * The steps of a running publication and a bar for the current one. Speed and
+ * time left come from successive polls, smoothed so one slow poll does not
+ * swing the estimate.
+ */
+function JobProgress({ bar }: { bar: any }) {
+  const last = useRef<{ done: number; at: number; unit: string; rate: number } | null>(null)
+  const measured = bar.total !== undefined
+  let rate = 0
+  if (measured) {
+    const now = Date.now()
+    const prev = last.current
+    if (prev && prev.unit === bar.unit && bar.done > prev.done && now > prev.at) {
+      const sample = ((bar.done - prev.done) * 1000) / (now - prev.at)
+      rate = prev.rate ? prev.rate * 0.6 + sample * 0.4 : sample
+    } else if (prev && prev.unit === bar.unit) {
+      rate = prev.rate
+    }
+    if (!prev || prev.done !== bar.done || prev.unit !== bar.unit) last.current = { done: bar.done, at: now, unit: bar.unit, rate }
+  } else {
+    last.current = null
+  }
+  const percent = measured ? Math.min(100, (bar.done / bar.total) * 100) : 0
+  const amount = !measured ? "" : bar.unit === "byte" ? `${mb(bar.done)} / ${mb(bar.total)}` : `${bar.done} / ${bar.total}`
+  const speed = !rate ? "" : bar.unit === "byte" ? `${mb(rate)}/s` : `${rate.toFixed(1)} ${bar.unit === "page" ? "页" : "张"}/s`
+  const left = rate ? `还要约 ${duration((bar.total - bar.done) / rate)}` : ""
+  return (
+    <div class="job-progress">
+      <ol class="steps">
+        {bar.steps.map((step: string, i: number) => (
+          <li class={i < bar.step ? "done" : i === bar.step ? "now" : ""}>{step}</li>
+        ))}
+      </ol>
+      <div class="track" role="progressbar" aria-label={bar.label}
+        aria-valuemin={0} aria-valuemax={measured ? bar.total : undefined} aria-valuenow={measured ? bar.done : undefined}>
+        <div class={measured ? "fill" : "fill busy"} style={measured ? { width: `${percent}%` } : undefined} />
+      </div>
+      <p class="small">
+        <span>{bar.label}</span>
+        {measured ? <span class="muted"> · {amount} · {Math.floor(percent)}%</span> : null}
+        {speed ? <span class="muted"> · {speed} · {left}</span> : null}
+      </p>
+    </div>
+  )
+}
+
 function Publication({ id, onChange }: { id: number; onChange: () => void }) {
   const [data, error, reload] = useLoad<any>(`/api/publications/${id}`)
   const [busy, setBusy] = useState(false)
@@ -273,7 +327,7 @@ function Publication({ id, onChange }: { id: number; onChange: () => void }) {
   const state = data?.job?.state ?? data?.state
   useEffect(() => {
     if (!data || !RUNNING.has(state)) return
-    const timer = setTimeout(reload, 3000)
+    const timer = setTimeout(reload, 2000)
     return () => clearTimeout(timer)
   }, [data])
   const act = async (path: string, body: unknown, done: string) => {
@@ -306,7 +360,7 @@ function Publication({ id, onChange }: { id: number; onChange: () => void }) {
       </div>
       <div class="body">
         <strong>{data.settings.title}</strong>
-        {data.progress ? <p class="muted small">{data.progress}</p> : null}
+        {data.bar ? <JobProgress bar={data.bar} /> : null}
         {data.error ? <p class="err-text">{data.error}</p> : null}
         {job?.error ? <p class="err-text">{job.error}</p> : null}
         {data.jobError ? <p class="err-text">E-Hentai 服务：{data.jobError}</p> : null}
