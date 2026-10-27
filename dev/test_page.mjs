@@ -173,6 +173,16 @@ if (!existsSync(font)) {
   check("the background is black by default", JSON.stringify(px(790, 5)) === "[0,0,0]")
   const above = ctx.getImageData(400, 0, page.width - 400, Math.floor(page.fit.marginTop)).data
   check("nothing is drawn above the text", !above.some((v, i) => i % 4 !== 3 && v !== 0))
+  const tp = P.composeTitlePage({ width: page.width, height: page.height, label: "IF 1" }, font)
+  const timg = await loadImage(tp.png)
+  check("a title page takes the size it is given", timg.width === page.width && timg.height === page.height)
+  const tc = createCanvas(timg.width, timg.height).getContext("2d")
+  tc.drawImage(timg, 0, 0)
+  const litIn = (x, y, w, h) => tc.getImageData(x, y, w, h).data.some((v, i) => i % 4 !== 3 && v > 40)
+  check("its text sits in the middle", litIn(0, Math.round(timg.height * 0.35), timg.width, Math.round(timg.height * 0.3)))
+  check("and nowhere near the edges", !litIn(0, 0, timg.width, Math.round(timg.height * 0.25)) &&
+        !litIn(0, Math.round(timg.height * 0.75), timg.width, Math.round(timg.height * 0.25)))
+  check("a title page needs some text", (() => { try { P.composeTitlePage({ width: 400, height: 400, label: " " }, font); return false } catch (e) { return /没有文字/.test(e.message) } })())
   const column = ctx.getImageData(400, 0, 400, 600).data
   let lit = 0
   for (let i = 0; i < column.length; i += 4) if (column[i] > 200 && column[i + 1] > 200 && column[i + 2] > 200) lit++

@@ -19,6 +19,19 @@ import { Library, cleanName } from "./library"
 import { DEFAULT_SPLIT, SplitSettings, checkSplit, countChars, joinPages, reconcile, splitPages } from "./split"
 
 export type Kind = "gallery" | "novel"
+
+/** A side story's label as stored: trimmed, one line, short enough for a page footer. */
+export function cleanRoute(route: string): string {
+  const clean = route.trim()
+  if (/[\r\n]/.test(clean)) throw new Error("番外标签只能是一行")
+  if ([...clean].length > 16) throw new Error(`番外标签最多 16 个字：「${clean}」`)
+  return clean
+}
+
+/** What a page's footer says: "12" on the main story, "IF 1 · 3" on a side story. */
+export function pageFooter(page: { route: string; routePage: number }): string {
+  return page.route ? `${page.route} · ${page.routePage}` : String(page.routePage)
+}
 export type Picker = "human" | "agent"
 export type Actor = "human" | "agent"
 
@@ -95,6 +108,10 @@ export type PageRow = {
   id: number
   chapter: number
   page: number
+  /** '' on the main story, else the side story's label, e.g. "IF 1". */
+  route: string
+  /** Where the page falls in its story: the main story and each side story count from 1. */
+  routePage: number
   text: string
   cont: boolean
   chars: number
@@ -106,6 +123,7 @@ export type PageRow = {
 export type ChapterResult = {
   chapter: number
   title: string
+  route: string
   pages: number
   reused: number
   /** Shots whose page's text changed: still in the project, now without a page. */
@@ -339,36 +357,91 @@ export class Studio {
   }
 
   /** Create chapter n (the next one) or replace an existing chapter's text. */
-  setChapter(project: string, input: { chapter: number; title?: string; text: string; split?: SplitSettings }): ChapterResult {
+  setChapter(
+    project: string,
+    input: { chapter: number; title?: string; route?: string; text: string; split?: SplitSettings },
+  ): ChapterResult {
     return this.db.transaction(() => {
       const row = this.novel(project)
       if (input.split) checkSplit(input.split)
       if (!input.text.trim()) throw new Error("章节原文不能为空")
+      const route = input.route === undefined ? undefined : cleanRoute(input.route)
       let chapter = this.db.prepare("SELECT * FROM chapters WHERE project_id = ? AND ord = ?").get(row.id, input.chapter) as any
       if (!chapter) {
-        const last = (this.db.prepare("SELECT max(ord) AS n FROM chapters WHERE project_id = ?").get(row.id) as { n: number | null }).n ?? 0
+        const prev = this.db.prepare("SELECT ord, route FROM chapters WHERE project_id = ? ORDER BY ord DESC LIMIT 1").get(row.id) as
+          | { ord: number; route: string }
+          | undefined
+        const last = prev?.ord ?? 0
         if (input.chapter !== last + 1) throw new Error(`现在有 ${last} 章，新章节只能是第 ${last + 1} 章`)
+        if (route === undefined && prev?.route) {
+          throw new Error(`第 ${last} 章是番外「${prev.route}」，新章节要用 route 说明：同一条番外给 "${prev.route}"，另一条番外给它的名字`)
+        }
         const id = Number(
           this.db
-            .prepare("INSERT INTO chapters (project_id, ord, title, split, updated_at) VALUES (?, ?, ?, ?, ?)")
-            .run(row.id, input.chapter, input.title?.trim() ?? "", JSON.stringify(input.split ?? {}), now()).lastInsertRowid,
+            .prepare("INSERT INTO chapters (project_id, ord, title, route, split, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .run(row.id, input.chapter, input.title?.trim() ?? "", route ?? "", JSON.stringify(input.split ?? {}), now())
+            .lastInsertRowid,
         )
         chapter = this.db.prepare("SELECT * FROM chapters WHERE id = ?").get(id)
       } else {
         this.db
-          .prepare("UPDATE chapters SET title = ?, split = ?, updated_at = ? WHERE id = ?")
+          .prepare("UPDATE chapters SET title = ?, route = ?, split = ?, updated_at = ? WHERE id = ?")
           .run(
             input.title !== undefined ? input.title.trim() : chapter.title,
+            route ?? chapter.route,
             input.split ? JSON.stringify(input.split) : chapter.split,
             now(),
             chapter.id,
           )
         chapter = this.db.prepare("SELECT * FROM chapters WHERE id = ?").get(chapter.id)
       }
+      this.checkRoutes(row.id)
       const pagesText = splitPages(input.text, this.splitFor(row.layout, chapter.split))
       const { reused, detached } = this.rewritePages(chapter.id, 0, pagesText)
       return this.chapterResult(chapter, pagesText, reused, detached)
     })()
+  }
+
+  /** Change a chapter's title or route without touching its text or pages. */
+  setChapterInfo(project: string, input: { chapter: number; title?: string; route?: string }) {
+    return this.db.transaction(() => {
+      const row = this.novel(project)
+      const chapter = this.db.prepare("SELECT * FROM chapters WHERE project_id = ? AND ord = ?").get(row.id, input.chapter) as any
+      if (!chapter) throw new Error(`没有第 ${input.chapter} 章`)
+      if (input.title === undefined && input.route === undefined) throw new Error("要给 title 或 route")
+      this.db
+        .prepare("UPDATE chapters SET title = ?, route = ?, updated_at = ? WHERE id = ?")
+        .run(
+          input.title !== undefined ? input.title.trim() : chapter.title,
+          input.route !== undefined ? cleanRoute(input.route) : chapter.route,
+          now(),
+          chapter.id,
+        )
+      this.checkRoutes(row.id)
+      const updated = this.db.prepare("SELECT ord, title, route FROM chapters WHERE id = ?").get(chapter.id) as any
+      return { chapter: updated.ord as number, title: updated.title as string, route: updated.route as string }
+    })()
+  }
+
+  /**
+   * Side stories come after the main story, and each one's chapters sit
+   * together, so the book reads: the story, then each extra in turn.
+   */
+  private checkRoutes(projectId: number) {
+    const chapters = this.db.prepare("SELECT ord, route FROM chapters WHERE project_id = ? ORDER BY ord").all(projectId) as {
+      ord: number
+      route: string
+    }[]
+    const seen = new Set<string>()
+    let prev = ""
+    for (const c of chapters) {
+      if (!c.route && prev) throw new Error(`第 ${c.ord} 章是正文，不能排在番外后面；番外章节要放在全部正文之后`)
+      if (c.route && c.route !== prev && seen.has(c.route)) {
+        throw new Error(`番外「${c.route}」的章节要连在一起，第 ${c.ord} 章和前面的「${c.route}」之间隔着别的章节`)
+      }
+      if (c.route) seen.add(c.route)
+      prev = c.route
+    }
   }
 
   /** Re-cut a chapter's existing text with new settings, optionally only from one page on. */
@@ -398,6 +471,7 @@ export class Studio {
     return {
       chapter: chapter.ord,
       title: chapter.title,
+      route: chapter.route,
       pages: this.chapterPages(chapter.id).length,
       reused,
       detached,
@@ -407,22 +481,27 @@ export class Studio {
 
   listPages(project: string, filter: { chapter?: number; status?: ShotStatus } = {}): PageRow[] {
     const row = this.novel(project)
+    // All pages, even for one chapter: a page's number in its story counts the chapters before it.
     const rows = this.db
       .prepare(
-        `SELECT p.id, p.ord AS page, p.text, p.cont, c.ord AS chapter, s.id AS shot_id
+        `SELECT p.id, p.ord AS page, p.text, p.cont, c.ord AS chapter, c.route, s.id AS shot_id
          FROM pages p JOIN chapters c ON c.id = p.chapter_id LEFT JOIN shots s ON s.page_id = p.id
-         WHERE c.project_id = ? ${filter.chapter ? "AND c.ord = ?" : ""}
-         ORDER BY c.ord, p.ord`,
+         WHERE c.project_id = ? ORDER BY c.ord, p.ord`,
       )
-      .all(...(filter.chapter ? [row.id, filter.chapter] : [row.id])) as any[]
+      .all(row.id) as any[]
     const shots = new Map(this.shotRows("s.project_id = ?", [row.id]).map((s) => [s.id, s]))
+    const counted = new Map<string, number>()
     return rows
       .map((r) => {
         const shot = r.shot_id ? shots.get(r.shot_id) ?? null : null
+        const routePage = (counted.get(r.route) ?? 0) + 1
+        counted.set(r.route, routePage)
         return {
           id: r.id,
           chapter: r.chapter,
           page: r.page,
+          route: r.route as string,
+          routePage,
           text: r.text,
           cont: r.cont === 1,
           chars: countChars(r.text),
@@ -431,7 +510,7 @@ export class Studio {
           counts: shot?.counts ?? null,
         }
       })
-      .filter((p) => !filter.status || p.status === filter.status)
+      .filter((p) => (!filter.chapter || p.chapter === filter.chapter) && (!filter.status || p.status === filter.status))
   }
 
   /* --------------------------------------------------------------- shots */
@@ -664,9 +743,10 @@ export class Studio {
   /** Chapters with their pages, each page carrying its picked image id (or a stand-in) for a thumbnail. */
   novelOverview(project: string) {
     const row = this.novel(project)
-    const chapters = this.db.prepare("SELECT ord, title FROM chapters WHERE project_id = ? ORDER BY ord").all(row.id) as {
+    const chapters = this.db.prepare("SELECT ord, title, route FROM chapters WHERE project_id = ? ORDER BY ord").all(row.id) as {
       ord: number
       title: string
+      route: string
     }[]
     const pages = this.listPages(project)
     const shotIds = pages.flatMap((p) => (p.shotId ? [p.shotId] : []))
@@ -675,6 +755,7 @@ export class Studio {
     return chapters.map((c) => ({
       chapter: c.ord,
       title: c.title,
+      route: c.route,
       pages: pages
         .filter((p) => p.chapter === c.ord)
         .map((p) => ({
@@ -750,6 +831,10 @@ export class Studio {
         page: page.ord as number,
         number: index + 1,
         total: order.length,
+        route: order[index].route,
+        routePage: order[index].routePage,
+        /** The title of the side story: its first chapter's title. */
+        routeTitle: order[index].route ? this.routeTitle(page.project, order[index].route) : "",
         text: page.text as string,
         cont: page.cont === 1,
         chars: countChars(page.text),
@@ -764,6 +849,16 @@ export class Studio {
         ...(shot?.feedback ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     }
+  }
+
+  /** A side story's title, from its first chapter. */
+  routeTitle(project: string, route: string): string {
+    const row = this.novel(project)
+    const first = this.db
+      .prepare("SELECT title FROM chapters WHERE project_id = ? AND route = ? ORDER BY ord LIMIT 1")
+      .get(row.id, route) as { title: string } | undefined
+    if (!first) throw new Error(`「${row.name}」没有番外「${route}」`)
+    return first.title
   }
 
   /* ------------------------------------------------------------- review */

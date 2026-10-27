@@ -77,6 +77,20 @@ function Project({ name }: { name: string }) {
   if (!project) return <Bar title={name} back="#/" />
   const keep = (status: string) => filter === "all" || status === filter
   const tabs = [["all", "全部"], ["pick", "待选图"], ["draw", "待抽卡"], ["shot", "待写镜头"], ["done", "已完成"]]
+  const editRoute = async (c: any) => {
+    const route = prompt(
+      `第 ${c.chapter} 章属于哪条番外？填标签，比如「IF 1」；留空表示正文。\n番外要排在全部正文之后，同一条番外的章节要连在一起；上传时每条番外前面会加一张只印这个标签的分隔页。`,
+      c.route,
+    )
+    if (route === null || route.trim() === c.route) return
+    try {
+      await call(`/api/projects/${encodeURIComponent(name)}/chapters/${c.chapter}`, { route })
+      showToast(route.trim() ? `第 ${c.chapter} 章设为番外「${route.trim()}」` : `第 ${c.chapter} 章改回正文`)
+      reload()
+    } catch (e: any) {
+      showToast(e.message, true)
+    }
+  }
   return (
     <>
       <Bar title={project.name} back="#/" right={<a href={href("p", name, "publish")}><button>发布</button></a>} />
@@ -92,12 +106,20 @@ function Project({ name }: { name: string }) {
           ))}
         </div>
         {project.kind === "novel"
-          ? project.chapters.map((c: any) => {
+          ? project.chapters.map((c: any, i: number) => {
               const pages = c.pages.filter((p: any) => keep(p.status))
               if (!pages.length) return null
+              const opens = c.route && c.route !== project.chapters[i - 1]?.route
               return (
                 <section key={c.chapter}>
-                  <h2>第 {c.chapter} 章{c.title ? ` · ${c.title}` : ""}</h2>
+                  {opens ? <div class="route-break">番外 · {c.route}</div> : null}
+                  <div class="chapter-head">
+                    <h2>
+                      第 {c.chapter} 章{c.title ? ` · ${c.title}` : ""}
+                      {c.route ? <span class="chip route">{c.route}</span> : null}
+                    </h2>
+                    <button class="small-button" onClick={() => editRoute(c)}>{c.route ? "改番外" : "设为番外"}</button>
+                  </div>
                   <div class="tiles">
                     {pages.map((p: any) => (
                       <a class="tile" href={href("p", name, "page", p.id)} key={p.id}>
@@ -398,7 +420,7 @@ function Page({ name, id }: { name: string; id: number }) {
       />
       <div class="wrap">
         <div class="row small muted" style={{ marginTop: "10px" }}>
-          <span>第 {p.chapter} 章{p.chapterTitle ? ` · ${p.chapterTitle}` : ""} · 第 {p.page} 页 · {p.chars} 字</span>
+          <span>{p.route ? `番外 ${p.route} · ` : ""}第 {p.chapter} 章{p.chapterTitle ? ` · ${p.chapterTitle}` : ""} · 第 {p.page} 页 · {p.chars} 字</span>
           <span class={"chip " + (p.status === "pick" ? "pick" : p.status === "done" ? "done" : "")}>{STATUS[p.status]}</span>
         </div>
         <div class="preview">

@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 import { Library } from "./library"
-import { Studio } from "./studio"
+import { Studio, pageFooter } from "./studio"
 import { Publisher } from "./publish"
 import { Thumbs } from "./thumbs"
 import { Visitor, WebAuth } from "./webauth"
@@ -213,6 +213,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
     return send(res, 200, studio.adopt(Number(parts[1]), body.imageIds.map(Number)))
   }
 
+  if (method === "POST" && parts[0] === "projects" && parts[2] === "chapters" && parts.length === 4) {
+    const body = await readJson(req)
+    if (body.route !== undefined && typeof body.route !== "string") throw new Error("route 要是文字")
+    if (body.title !== undefined && typeof body.title !== "string") throw new Error("title 要是文字")
+    return send(res, 200, studio.setChapterInfo(parts[1], { chapter: Number(parts[3]), title: body.title, route: body.route }))
+  }
+
   if (method === "POST" && parts[0] === "feedback" && parts.length === 1) {
     const body = await readJson(req)
     return send(res, 200, studio.comment(String(body.project), {
@@ -249,7 +256,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
       image,
       detail.page,
       {
-        pageNumber: String(detail.page.number),
+        pageNumber: pageFooter(detail.page),
         background: detail.layout.background,
         textColor: detail.layout.textColor,
       },

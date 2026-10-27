@@ -349,3 +349,45 @@ export async function composePage(image: Buffer, options: PageOptions, fontPath:
     characters: paragraphs(options.text).join("").length,
   }
 }
+
+export type TitlePageOptions = {
+  width: number
+  height: number
+  /** The one line on the page: a side story's label, e.g. "IF 1". */
+  label: string
+  background?: string
+  textColor?: string
+}
+
+/**
+ * A page with one line of text, centred: the page that opens a side story.
+ * It takes the size of the page after it, so in a gallery it reads as one
+ * more page of the book.
+ */
+export function composeTitlePage(options: TitlePageOptions, fontPath: string): { png: Buffer; width: number; height: number } {
+  for (const [name, value] of [["background", options.background], ["textColor", options.textColor]]) {
+    if (value !== undefined && !HEX.test(value)) throw new Error(`${name} 要写成 #rgb 或 #rrggbb，收到的是 ${value}`)
+  }
+  const { width, height } = options
+  if (!(width >= 200 && height >= 200)) throw new Error(`标题页尺寸不对：${width}×${height}`)
+  const label = options.label.trim()
+  if (!label) throw new Error("标题页没有文字")
+  ensureFont(fontPath)
+  const paper = options.background ?? "#000000"
+  const ink = options.textColor ?? "#ffffff"
+  const canvas = createCanvas(width, height)
+  const ctx = canvas.getContext("2d")
+  ctx.fillStyle = paper
+  ctx.fillRect(0, 0, width, height)
+
+  const size = Math.round((height * 80) / 1216)
+  ctx.font = `${size}px "${FAMILY}"`
+  ctx.fillStyle = ink
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  const spacing = Math.round(size * 0.12)
+  ctx.letterSpacing = `${spacing}px`
+  // Spacing follows every character, the last one too: shift by half of it to stay centred.
+  ctx.fillText(label, width / 2 + spacing / 2, height / 2)
+  return { png: canvas.toBuffer("image/png"), width, height }
+}

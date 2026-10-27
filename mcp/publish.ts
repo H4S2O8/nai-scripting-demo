@@ -21,9 +21,9 @@ import { loadImage } from "@napi-rs/canvas"
 
 import { EhClient } from "./ehclient"
 import { ImageRow, Library } from "./library"
-import { composePage } from "./page"
+import { composePage, composeTitlePage } from "./page"
 import { putObject, r2Config } from "./r2"
-import { Studio } from "./studio"
+import { PageRow, Studio, pageFooter } from "./studio"
 import { Thumbs } from "./thumbs"
 
 export type Item = { imageId: number; pageId?: number }
@@ -40,11 +40,41 @@ export type PublishSettings = {
   /** Library image whose original is the cover background; default the first item's. */
   backgroundImageId?: number | null
   acceptSiteTerms?: boolean
+  /** A novel with side stories: add a page-number table of contents to the description. Default on. */
+  toc?: boolean
+}
+
+/** One file of a novel's upload: a composed page, or the title page that opens a side story. */
+type Sheet = { url: string; route: string; kind: "page" | "title" }
+
+/**
+ * Where each part of the book starts and ends, in the gallery's own page
+ * numbers — the cover is page 1, so the first sheet is page 2.
+ */
+export function tableOfContents(sheets: Sheet[], titles: Map<string, string>): string {
+  return sheets.some((sheet) => sheet.route) ? ["目录", ...contentsLines(sheets, titles, 2)].join("\n") : ""
+}
+
+/** One line per part — the main story, then each side story — with its gallery pages, the first sheet being `first`. */
+export function contentsLines(sheets: Sheet[], titles: Map<string, string>, first: number): string[] {
+  const parts: { route: string; from: number; to: number }[] = []
+  sheets.forEach((sheet, i) => {
+    const page = i + first
+    const last = parts.at(-1)
+    if (last && last.route === sheet.route) last.to = page
+    else parts.push({ route: sheet.route, from: page, to: page })
+  })
+  return parts.map((p) => {
+    const name = p.route ? `${p.route}${titles.get(p.route) ? "「" + titles.get(p.route) + "」" : ""}` : "正文"
+    return `${name}${name.endsWith("」") ? "" : " "}p.${p.from}${p.to > p.from ? "–" + p.to : ""}`
+  })
 }
 
 export type Candidate = {
   imageId: number
   pageId?: number
+  /** A novel page's side story, '' on the main story. */
+  route?: string
   label: string
   /** On by default: picked in a shot (gallery) or a finished page (novel). */
   selected: boolean
@@ -124,11 +154,12 @@ export class Publisher {
     if (row.kind === "novel") {
       return studio.novelOverview(row.name).flatMap((chapter) =>
         chapter.pages.map((page): Candidate => {
-          const label = `第${chapter.chapter}章 第${page.page}页`
-          if (!page.picked) return { imageId: 0, pageId: page.id, label, selected: false, blocked: "这页还没选图" }
+          const label = `${chapter.route ? chapter.route + " · " : ""}第${chapter.chapter}章 第${page.page}页`
+          const route = chapter.route
+          if (!page.picked) return { imageId: 0, pageId: page.id, route, label, selected: false, blocked: "这页还没选图" }
           const image = this.library().get([page.picked])[0]
           const blocked = this.uploadable(image) ? undefined : "这页的图只在 Mac 备份里，线上没有原图"
-          return { imageId: page.picked, pageId: page.id, label, selected: !blocked, blocked }
+          return { imageId: page.picked, pageId: page.id, route, label, selected: !blocked, blocked }
         }),
       )
     }
@@ -309,16 +340,28 @@ export class Publisher {
   }
 
   private async prepare(id: number, project: string, kind: string, items: Item[], settings: PublishSettings) {
-    const urls: string[] = []
+    let urls: string[] = []
+    let description = settings.description ?? ""
     if (kind === "novel") {
+      const composed: { url: string; width: number; height: number; pageId: number }[] = []
       try {
         for (const [index, item] of items.entries()) {
           this.composing.set(id, { done: index, total: items.length })
           this.mark(id, { progress: `合成第 ${index + 1}/${items.length} 页` })
-          urls.push(await this.composedPage(project, item.pageId!, item.imageId))
+          composed.push({ ...(await this.composedPage(project, item.pageId!, item.imageId)), pageId: item.pageId! })
         }
       } finally {
         this.composing.delete(id)
+      }
+      const { sheets, titles } = await this.withTitlePages(project, composed)
+      urls = sheets.map((sheet) => sheet.url)
+      const toc = settings.toc === false ? "" : tableOfContents(sheets, titles)
+      if (toc) {
+        description = description.trim() ? `${description.trim()}\n\n${toc}` : toc
+        const p = this.row(id)
+        this.db
+          .prepare("UPDATE publications SET settings = ? WHERE id = ?")
+          .run(JSON.stringify({ ...JSON.parse(p.settings), tocText: toc }), id)
       }
     } else {
       for (const item of items) urls.push(this.backgroundUrl(item.imageId))
@@ -329,7 +372,7 @@ export class Publisher {
       image_urls: urls,
       title: settings.title,
       title_jpn: settings.titleJpn ?? "",
-      description: settings.description ?? "",
+      description,
       language: settings.language ?? (kind === "novel" ? "Chinese" : "No Text"),
       language_type: settings.languageType ?? "Official / Textless",
       accept_site_terms: settings.acceptSiteTerms === true,
@@ -342,7 +385,7 @@ export class Publisher {
   }
 
   /** A novel page composed with its picked picture, on R2 — made once per page, picture and text. */
-  private async composedPage(project: string, pageId: number, imageId: number): Promise<string> {
+  private async composedPage(project: string, pageId: number, imageId: number): Promise<{ url: string; width: number; height: number }> {
     const studio = new Studio(this.library())
     const detail = studio.pageDetail(pageId)
     if (detail.project !== project) throw new Error(`页 #${pageId} 不属于「${project}」`)
@@ -351,21 +394,54 @@ export class Publisher {
     const options = {
       text: detail.page.text,
       continued: detail.page.cont,
-      pageNumber: String(detail.page.number),
+      pageNumber: pageFooter(detail.page),
       background: detail.layout.background,
       textColor: detail.layout.textColor,
     }
     const digest = createHash("sha1").update(JSON.stringify(options)).digest("hex").slice(0, 16)
+    // Renders from before sizes were kept are made again: a title page needs its neighbour's size.
     const known = this.db
-      .prepare("SELECT url FROM page_renders WHERE page_id = ? AND image_id = ? AND digest = ?")
-      .get(pageId, imageId, digest) as { url: string } | undefined
-    if (known) return known.url
+      .prepare("SELECT url, width, height FROM page_renders WHERE page_id = ? AND image_id = ? AND digest = ? AND width IS NOT NULL")
+      .get(pageId, imageId, digest) as { url: string; width: number; height: number } | undefined
+    if (known) return known
     const composed = await composePage(await this.thumbs.original(image), options, this.fontPath())
     const url = await this.store(`pages/${digest}-${pageId}-${imageId}.png`, composed.png, "image/png")
     this.db
-      .prepare("INSERT OR REPLACE INTO page_renders (page_id, image_id, digest, url, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(pageId, imageId, digest, url, now())
-    return url
+      .prepare(
+        "INSERT OR REPLACE INTO page_renders (page_id, image_id, digest, url, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(pageId, imageId, digest, url, composed.width, composed.height, now())
+    return { url, width: composed.width, height: composed.height }
+  }
+
+  /**
+   * The upload order of a novel: its pages, with a title page opening each
+   * side story — its label alone, "IF 1" — the size of the page after it.
+   */
+  private async withTitlePages(project: string, composed: { url: string; width: number; height: number; pageId: number }[]) {
+    const studio = new Studio(this.library())
+    const pages = new Map<number, PageRow>(studio.listPages(project).map((p) => [p.id, p]))
+    const layout = studio.getProject(project).layout
+    const titles = new Map<string, string>()
+    const titlePage = async (label: string, size: { width: number; height: number }) => {
+      const options = { ...size, label, background: layout.background, textColor: layout.textColor }
+      const digest = createHash("sha1").update(JSON.stringify(options)).digest("hex").slice(0, 16)
+      const made = composeTitlePage(options, this.fontPath())
+      return this.store(`pages/title-${digest}.png`, made.png, "image/png")
+    }
+    const sheets: Sheet[] = []
+    let prev = ""
+    for (const page of composed) {
+      const route = pages.get(page.pageId)?.route ?? ""
+      if (route && route !== prev) {
+        // The contents name each side story by its first chapter's title.
+        if (!titles.has(route)) titles.set(route, studio.routeTitle(project, route))
+        sheets.push({ url: await titlePage(route, page), route, kind: "title" })
+      }
+      sheets.push({ url: page.url, route, kind: "page" })
+      prev = route
+    }
+    return { sheets, titles }
   }
 
   /** The publication with the publisher's own view of its job. */
@@ -424,7 +500,10 @@ export class Publisher {
     const args: Record<string, unknown> = { job_id: this.job(id) }
     if (changes.title !== undefined) args.title = changes.title
     if (changes.titleJpn !== undefined) args.title_jpn = changes.titleJpn
-    if (changes.description !== undefined) args.description = changes.description
+    if (changes.description !== undefined) {
+      const toc = JSON.parse(this.row(id).settings).tocText as string | undefined
+      args.description = toc ? (changes.description.trim() ? `${changes.description.trim()}\n\n${toc}` : toc) : changes.description
+    }
     if (changes.language !== undefined) args.language = changes.language
     if (changes.languageType !== undefined) args.language_type = changes.languageType
     if (changes.acceptSiteTerms !== undefined) args.accept_site_terms = changes.acceptSiteTerms

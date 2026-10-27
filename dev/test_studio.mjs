@@ -208,6 +208,38 @@ console.log("feedback")
   check("resolving twice is an error", throws(() => st.resolve("书", [f.id]), /已经解决/))
 }
 
+console.log("side stories")
+{
+  const st = fresh()
+  st.createProject({ name: "雨夜", kind: "novel" })
+  st.setChapter("雨夜", { chapter: 1, text: "雨还在下。\n她没有回头。" })
+  st.setChapter("雨夜", { chapter: 2, text: "第二章。" })
+  const extra = st.setChapter("雨夜", { chapter: 3, title: "如果她回头", route: " IF 1 ", text: "她回头了。\n他愣住。" })
+  check("a chapter can open a side story, its label trimmed", extra.route === "IF 1")
+  check("the chapter after a side story must say where it belongs",
+        throws(() => st.setChapter("雨夜", { chapter: 4, text: "接着。" }), /route/))
+  st.setChapter("雨夜", { chapter: 4, route: "IF 1", text: "接着 IF 1。" })
+  st.setChapter("雨夜", { chapter: 5, title: "另一条路", route: "IF 2", text: "IF 2 开始。" })
+  check("the main story cannot follow a side story",
+        throws(() => st.setChapter("雨夜", { chapter: 6, route: "", text: "正文？" }), /正文/))
+  check("a side story's chapters stay together",
+        throws(() => st.setChapter("雨夜", { chapter: 6, route: "IF 1", text: "回到 IF 1？" }), /连在一起/))
+  check("nothing was written by a refused chapter", st.listPages("雨夜").every((p) => p.chapter <= 5))
+  check("a long label is refused", throws(() => st.setChapterInfo("雨夜", { chapter: 5, route: "一二三四五六七八九十一二三四五六七" }), /16/))
+  check("moving a middle chapter out of the main story is refused",
+        throws(() => st.setChapterInfo("雨夜", { chapter: 1, route: "IF 0" }), /正文/))
+  const pages = st.listPages("雨夜")
+  const by = (chapter) => pages.filter((p) => p.chapter === chapter)
+  check("the main story counts on", JSON.stringify(by(2).map((p) => [p.route, p.routePage])) === JSON.stringify([["", by(1).length + 1]]))
+  check("a side story counts from 1 across its chapters",
+        by(3)[0].routePage === 1 && by(4)[0].routePage === by(3).length + 1 && by(5)[0].routePage === 1)
+  check("one chapter's pages keep their place in the story", st.listPages("雨夜", { chapter: 4 })[0].routePage === by(3).length + 1)
+  check("the footer names the side story", S.pageFooter(by(4)[0]) === `IF 1 · ${by(3).length + 1}` && S.pageFooter(by(2)[0]) === "2")
+  const detail = st.pageDetail(by(4)[0].id).page
+  check("a page knows its side story and its title", detail.route === "IF 1" && detail.routeTitle === "如果她回头")
+  check("the overview carries routes", st.novelOverview("雨夜").map((c) => c.route).join(",") === ",,IF 1,IF 1,IF 2")
+}
+
 console.log("migrating the live library")
 {
   // The schema as first deployed: no user_version, no studio tables.
@@ -234,7 +266,10 @@ console.log("migrating the live library")
   check("old images survive the upgrade", row.prompt === "fox" && row.note === "kept" && row.tags[0] === "动物" && row.project === "图库测试")
   check("old images have no verdict", row.verdict === null && row.shotId === null && row.favorite === false)
   check("old projects become galleries picked by a person", st.getProject("图库测试").kind === "gallery" && st.getProject("图库测试").picker === "human")
-  check("the version is recorded", lib.handle.pragma("user_version", { simple: true }) === 4)
+  check("the version is recorded", lib.handle.pragma("user_version", { simple: true }) === 5)
+  check("chapters gain a route, composed pages a size", ["route"].every((c) =>
+        lib.handle.prepare("SELECT 1 FROM pragma_table_info('chapters') WHERE name = ?").get(c)) &&
+        ["width", "height"].every((c) => lib.handle.prepare("SELECT 1 FROM pragma_table_info('page_renders') WHERE name = ?").get(c)))
   check("the publishing tables exist", ["mascots", "publications", "page_renders"].every((t) =>
         lib.handle.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)))
   check("old images gain an empty thumbnail link", row.thumbUrl === null)

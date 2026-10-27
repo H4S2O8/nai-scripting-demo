@@ -22,7 +22,7 @@ const POSITIONS: [string, string][] = [
 const RUNNING = new Set(["composing", "preparing", "queued", "downloading", "rendering_cover", "uploading", "publishing"])
 
 type Spec = Record<string, Record<string, any>>
-type Item = { imageId: number; pageId?: number; label: string; selected: boolean; blocked?: string }
+type Item = { imageId: number; pageId?: number; route?: string; label: string; selected: boolean; blocked?: string }
 
 /** Set one field of the spec, or remove it (undefined), dropping empty sections. */
 function withField(spec: Spec, section: string, key: string, value: any): Spec {
@@ -404,6 +404,7 @@ export function Publish({ name }: { name: string }) {
 
   const novel = project?.kind === "novel"
   const chosen = items.filter((i) => i.selected && !i.blocked)
+  const routes = [...new Set(chosen.flatMap((i) => (i.route ? [i.route] : [])))]
   const backgroundImageId = settings?.backgroundImageId && chosen.some((i) => i.imageId === settings.backgroundImageId)
     ? settings.backgroundImageId
     : chosen[0]?.imageId ?? null
@@ -441,6 +442,11 @@ export function Publish({ name }: { name: string }) {
       <div class="wrap publish">
         <h2>1. 选图和顺序（已选 {chosen.length}）</h2>
         <p class="muted small">{novel ? "小说按页序上传合成好的左图右文页面。" : "默认选中各镜头里选定的图；其他图片可以手动加上。"}</p>
+        {routes.length ? (
+          <p class="muted small">
+            含番外 {routes.join("、")}：每条番外前面自动加一张只印番外标签的分隔页，番外页脚印「{routes[0]} · 页码」。
+          </p>
+        ) : null}
         <div class="pick-list">
           {items.map((item, index) => (
             <div class={"pick-row" + (item.blocked ? " blocked" : "")} key={`${item.pageId ?? 0}-${item.imageId}`}>
@@ -508,6 +514,12 @@ export function Publish({ name }: { name: string }) {
             </Field>
           ) : null}
         </div>
+        {routes.length ? (
+          <label class="check">
+            <input type="checkbox" checked={settings.toc !== false} onChange={(e) => set("toc", (e.target as HTMLInputElement).checked)} />
+            简介末尾附目录（正文和各条番外从画廊第几页开始）
+          </label>
+        ) : null}
         <label class="check">
           <input type="checkbox" checked={settings.acceptSiteTerms === true} onChange={(e) => set("acceptSiteTerms", (e.target as HTMLInputElement).checked)} />
           我同意 E-Hentai 的上传条款

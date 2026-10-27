@@ -288,8 +288,10 @@ export class Library {
    * deployed; 2 adds the studio — project kinds, characters, chapters and
    * pages, shots, candidate verdicts and review feedback; 3 the R2 thumbnail
    * link; 4 publishing to E-Hentai — the mascot library, publications, the
-   * composed novel pages kept on R2, and each project's last publish settings.
-   * Each step only adds columns and tables, so a live database upgrades in
+   * composed novel pages kept on R2, and each project's last publish settings;
+   * 5 side stories — a chapter's route ('' for the main story, else the label
+   * of the extra it belongs to, e.g. "IF 1") — and the size of each composed
+   * page, so a route's title page can match the pages around it. Each step only adds columns and tables, so a live database upgrades in
    * place.
    */
   private migrate() {
@@ -327,6 +329,16 @@ export class Library {
         const has = (this.db.prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'publish'").get() ?? null) !== null
         if (!has) this.db.exec("ALTER TABLE projects ADD COLUMN publish TEXT NOT NULL DEFAULT '{}'")
         this.db.pragma("user_version = 4")
+      })()
+    }
+    if (version < 5) {
+      this.db.transaction(() => {
+        const has = (table: string, column: string) =>
+          (this.db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(column) ?? null) !== null
+        if (!has("chapters", "route")) this.db.exec("ALTER TABLE chapters ADD COLUMN route TEXT NOT NULL DEFAULT ''")
+        if (!has("page_renders", "width")) this.db.exec("ALTER TABLE page_renders ADD COLUMN width INTEGER")
+        if (!has("page_renders", "height")) this.db.exec("ALTER TABLE page_renders ADD COLUMN height INTEGER")
+        this.db.pragma("user_version = 5")
       })()
     }
   }

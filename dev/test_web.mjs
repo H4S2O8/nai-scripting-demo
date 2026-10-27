@@ -211,6 +211,16 @@ console.log("the API, end to end")
     const detail = await (await as(`/api/pages/${pageId}`)).json()
     check("a page shows its candidates", detail.candidates.length === 2 && detail.page.number === 1)
 
+    const chapterUrl = `/api/projects/${encodeURIComponent("书")}/chapters/1`
+    const marked = await post(chapterUrl, { route: "IF 1" })
+    const after = await (await as("/api/projects/" + encodeURIComponent("书"))).json()
+    check("a chapter can be marked as a side story from the page", marked.ok && after.chapters[0].route === "IF 1")
+    const tooLong = await post(chapterUrl, { route: "一二三四五六七八九十一二三四五六七" })
+    check("a bad label is refused with the reason", tooLong.status >= 400 && /16/.test(await tooLong.text()))
+    check("marking without the app header is refused", (await post(chapterUrl, { route: "" }, {})).status === 403)
+    check("and it can go back to the main story", (await post(chapterUrl, { route: "" })).ok &&
+          (await (await as("/api/projects/" + encodeURIComponent("书"))).json()).chapters[0].route === "")
+
     const csrf = await post("/api/verdict", { imageIds: [ids[1]], action: "pick" }, {})
     check("a write without the app header is refused", csrf.status === 403)
     const pick = await post("/api/verdict", { imageIds: [ids[1]], action: "pick" })

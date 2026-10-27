@@ -243,6 +243,46 @@ console.log("progress")
   check("composing that this process is not doing says it stopped", /重新开始准备/.test(b.label) && b.total === undefined)
 }
 
+console.log("side stories")
+{
+  st.createProject({ name: "番外书", kind: "novel" })
+  st.setChapter("番外书", { chapter: 1, text: "正文。" })
+  st.setChapter("番外书", { chapter: 2, title: "如果", route: "IF 1", text: "IF 1 的一页。" })
+  st.setChapter("番外书", { chapter: 3, route: "IF 2", text: "IF 2 的一页。" })
+  const picks = st.listPages("番外书").map((page) => {
+    const shot = st.setShot({ project: "番外书", pageId: page.id, spec: { prompt: "p" } })
+    const img = image("番外书", shot.id)
+    st.verdict([img], "pick", "human")
+    return { pageId: page.id, imageId: img }
+  })
+  const c = pub.candidates("番外书")
+  check("candidates carry their side story", c.map((x) => x.route).join(",") === ",IF 1,IF 2" && /^IF 1 · /.test(c[1].label))
+  calls.length = 0
+  stored.length = 0
+  const id = pub.start("番外书", picks, { title: "番外书", coverStyle: "ai", description: "简介。" })
+  await settled(id)
+  const prep = calls.find((x) => x.name === "prepare_gallery").args
+  const kinds = prep.image_urls.map((u) => (u.includes("pages/title-") ? "title" : "page"))
+  check("the upload is page, then each side story's title page and pages, with no END page",
+        JSON.stringify(kinds) === JSON.stringify(["page", "title", "page", "title", "page"]), JSON.stringify(prep.image_urls))
+  check("each composed page and title page reached R2", stored.length === 5, JSON.stringify(stored.map((x) => x.name)))
+  check("the table of contents counts the cover as page 1",
+        prep.description === "简介。\n\n目录\n正文 p.2\nIF 1「如果」p.3–4\nIF 2 p.5–6", JSON.stringify(prep.description))
+  calls.length = 0
+  await pub.update(id, { description: "新简介。" })
+  check("a new description keeps the table of contents",
+        calls.at(-1).args.description === "新简介。\n\n目录\n正文 p.2\nIF 1「如果」p.3–4\nIF 2 p.5–6")
+  calls.length = 0
+  await settled(pub.start("番外书", picks.slice(1), { title: "只有番外", coverStyle: "ai", toc: false }))
+  const only = calls.find((x) => x.name === "prepare_gallery").args
+  check("side stories alone: a title page each, and no contents when turned off",
+        only.image_urls.length === 4 && only.description === "", JSON.stringify(only))
+  calls.length = 0
+  await settled(pub.start("番外书", picks.slice(0, 1), { title: "只有正文", coverStyle: "ai" }))
+  const plain = calls.find((x) => x.name === "prepare_gallery").args
+  check("the main story alone is just its pages", plain.image_urls.length === 1 && plain.description === "")
+}
+
 console.log("cover preview and mascots")
 {
   const preview = await pub.previewCover({ backgroundImageId: a1, coverStyle: "ai", coverSpec: { panel: { position: "top" } } })

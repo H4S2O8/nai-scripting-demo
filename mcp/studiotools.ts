@@ -10,7 +10,7 @@ import { z } from "zod"
 import { DEFAULT_PARAMS, GenerateParams, fitSize, maxCharacterPrompts, modelLabel } from "../nai"
 import { ImageRow, Library } from "./library"
 import { ensureFont } from "./page"
-import { PageRow, STATUS_LABEL, Shot, Studio } from "./studio"
+import { PageRow, STATUS_LABEL, Shot, Studio, pageFooter } from "./studio"
 
 export type StudioDeps = {
   library: () => Library
@@ -45,7 +45,7 @@ const counts = (c: Shot["counts"] | null) =>
 
 function pageLine(p: PageRow): string {
   const head = p.text.replace(/\n/g, " ").slice(0, 24)
-  return `页 #${p.id} · 第${p.chapter}章第${p.page}页 · ${p.chars}字 · ${STATUS_LABEL[p.status]}` +
+  return `页 #${p.id} · ${p.route ? p.route + " · " : ""}第${p.chapter}章第${p.page}页 · 页脚「${pageFooter(p)}」 · ${p.chars}字 · ${STATUS_LABEL[p.status]}` +
     (p.shotId ? ` · 镜头 #${p.shotId}（${counts(p.counts)}）` : "") + `\n  ${head}…`
 }
 
@@ -186,13 +186,22 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
         "preferred). Actions: set (create the next chapter or replace one's text — pages whose " +
         "text is unchanged keep their shot and images; shots on changed pages become detached and " +
         "show up in novelai_review); resplit (re-cut a chapter with new lengths, optionally only " +
-        "from one page on); pages (each page's id, length, status and shot); read (full text of " +
-        "pages, with their shots).",
+        "from one page on); info (change a chapter's title or route without touching its text); " +
+        "pages (each page's id, length, status and shot); read (full text of pages, with their shots). " +
+        "Side stories (番外, IF routes) are chapters with a route label such as \"IF 1\": they come " +
+        "after every main chapter, one route's chapters together; the first chapter's title names the " +
+        "route in the upload's table of contents. Their pages are numbered within the route (footer " +
+        "\"IF 1 · 3\"), and an upload gets a page with just the label before each route.",
       inputSchema: {
-        action: z.enum(["set", "resplit", "pages", "read"]),
+        action: z.enum(["set", "resplit", "info", "pages", "read"]),
         project: z.string(),
         chapter: z.number().int().positive().optional().describe("Chapter number, from 1."),
         title: z.string().optional(),
+        route: z
+          .string()
+          .max(16)
+          .optional()
+          .describe("set/info: \"\" for the main story, else the side story's label, e.g. \"IF 1\". Omit to keep."),
         text: z.string().max(200_000).optional().describe("set: the chapter's whole original text."),
         target: z.number().int().optional().describe("Page length; min and max default to 0.7× and 1.3×."),
         min: z.number().int().optional(),
@@ -219,12 +228,12 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
             args.action === "set"
               ? (() => {
                   if (!args.text) throw new Error("set 要给 text（这一章的完整原文）")
-                  return s.setChapter(args.project, { chapter: args.chapter, title: args.title, text: args.text, split })
+                  return s.setChapter(args.project, { chapter: args.chapter, title: args.title, route: args.route, text: args.text, split })
                 })()
               : s.resplitChapter(args.project, { chapter: args.chapter, split, fromPage: args.fromPage })
           return text(
             [
-              `第 ${result.chapter} 章${result.title ? "「" + result.title + "」" : ""}：${result.pages} 页，每页 ${result.lengths.min}–${result.lengths.max} 字`,
+              `第 ${result.chapter} 章${result.route ? "（番外 " + result.route + "）" : ""}${result.title ? "「" + result.title + "」" : ""}：${result.pages} 页，每页 ${result.lengths.min}–${result.lengths.max} 字`,
               result.reused > 0 ? `沿用了 ${result.reused} 页（镜头和图都还在）` : "",
               result.detached.length
                 ? `这些镜头的页文字变了，已脱页（镜头和图保留，用 novelai_shot set 的 shotId + pageId 重新挂到页上）：\n` +
@@ -234,6 +243,11 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
               .filter(Boolean)
               .join("\n"),
           )
+        }
+        if (args.action === "info") {
+          if (!args.chapter) return text("要给 chapter（章节号）", true)
+          const info = s.setChapterInfo(args.project, { chapter: args.chapter, title: args.title, route: args.route })
+          return text(`第 ${info.chapter} 章：${info.route ? "番外 " + info.route : "正文"}${info.title ? "「" + info.title + "」" : ""}`)
         }
         if (args.action === "pages") {
           const pages = s.listPages(args.project, { chapter: args.chapter, status: args.status })
@@ -252,7 +266,7 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
             .map((p) => {
               const shot = p.shotId ? shots.get(p.shotId) : undefined
               return [
-                `页 #${p.id} · 第${p.chapter}章第${p.page}页${p.cont ? "（接上页段落）" : ""} · ${p.chars}字 · ${STATUS_LABEL[p.status]}`,
+                `页 #${p.id} · ${p.route ? p.route + " · " : ""}第${p.chapter}章第${p.page}页 · 页脚「${pageFooter(p)}」${p.cont ? "（接上页段落）" : ""} · ${p.chars}字 · ${STATUS_LABEL[p.status]}`,
                 p.text,
                 shot ? `镜头 #${shot.id}：${shot.prompt || "（未写提示词）"}` : "镜头：无",
               ].join("\n")
