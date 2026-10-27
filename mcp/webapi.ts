@@ -8,6 +8,7 @@
  * is SameSite=Strict besides.
  */
 import { IncomingMessage, ServerResponse } from "node:http"
+import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
@@ -33,6 +34,41 @@ const INDEX = new URL("../web/index.html", import.meta.url)
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers })
   res.end(JSON.stringify(body))
+}
+
+/**
+ * The front end's version: a hash of the built script and the stylesheet.
+ *
+ * A browser that keeps an old app.js — some in-app browsers ignore no-cache —
+ * would run yesterday's page against today's API. So the page is never cached,
+ * it loads the assets as app.js?v=<version>, a URL that changes with every
+ * build, and it carries the version so the running page can notice a newer
+ * one and offer to reload.
+ */
+export function frontendVersion(): string {
+  const hash = createHash("sha1")
+  for (const { file } of Object.values(STATIC)) {
+    const path = fileURLToPath(file)
+    if (!existsSync(path)) throw new Error(`缺少前端文件 ${path}，先 npm run build`)
+    hash.update(readFileSync(path))
+  }
+  return hash.digest("hex").slice(0, 10)
+}
+
+function sendIndex(res: ServerResponse) {
+  const path = fileURLToPath(INDEX)
+  let version: string
+  try {
+    version = frontendVersion()
+  } catch (error) {
+    res.writeHead(500, { "content-type": "text/plain; charset=utf-8" }).end(error instanceof Error ? error.message : String(error))
+    return
+  }
+  const html = readFileSync(path, "utf8")
+    .replace(/(\/app\/assets\/(?:app\.js|style\.css))/g, `$1?v=${version}`)
+    .replace("</head>", `  <meta name="nai-version" content="${version}">\n  </head>`)
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+  res.end(html)
 }
 
 function sendFile(res: ServerResponse, file: URL, type: string) {
@@ -122,7 +158,7 @@ export async function handleWeb(req: IncomingMessage, res: ServerResponse, url: 
   if (!path.startsWith("/api/")) {
     const asset = STATIC[path]
     if (asset) sendFile(res, asset.file, asset.type)
-    else sendFile(res, INDEX, "text/html; charset=utf-8")
+    else sendIndex(res)
     return true
   }
 
@@ -143,6 +179,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
     send(res, 403, { error: "缺少 x-nai-app 请求头" })
     return
   }
+
+  if (method === "GET" && parts[0] === "version") return send(res, 200, { version: frontendVersion() })
 
   if (method === "GET" && parts[0] === "me") return send(res, 200, { ...visitor, access: deps.auth.accessConfigured })
 

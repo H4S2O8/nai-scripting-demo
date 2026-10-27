@@ -95,3 +95,39 @@ export function Bar({ title, back, right }: { title: string; back?: string; righ
   )
 }
 
+
+/** The version this page was loaded as, from the meta tag the server writes into index.html. */
+export const APP_VERSION = document.querySelector('meta[name="nai-version"]')?.getAttribute("content") ?? "dev"
+
+/**
+ * A bar offering to reload when the server has a newer front end than the one
+ * running here. Checked on navigation, on returning to the tab and every five
+ * minutes: a page left open across a deploy otherwise keeps running old code
+ * and shows none of the new features.
+ */
+export function UpdateBanner() {
+  const [newer, setNewer] = useState<string | null>(null)
+  useEffect(() => {
+    const check = () =>
+      fetch("/api/version", { credentials: "same-origin", cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => d?.version && d.version !== APP_VERSION && setNewer(d.version))
+        .catch(() => {})
+    check()
+    const timer = setInterval(check, 5 * 60_000)
+    const onVisible = () => document.visibilityState === "visible" && check()
+    window.addEventListener("hashchange", check)
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener("hashchange", check)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [])
+  if (!newer) return null
+  return (
+    <button class="update-banner" onClick={() => location.reload()}>
+      页面有新版本（{newer}），点这里刷新
+    </button>
+  )
+}

@@ -15,7 +15,7 @@
 import { render } from "preact"
 import { useCallback, useEffect, useMemo, useState } from "preact/hooks"
 
-import { ApiError, Bar, Toast, call, href, showToast, thumb, useLoad, useRoute } from "./common"
+import { APP_VERSION, ApiError, Bar, Toast, UpdateBanner, call, href, showToast, thumb, useLoad, useRoute } from "./common"
 import { Publish } from "./publish"
 
 const STATUS: Record<string, string> = { shot: "待写镜头", draw: "待抽卡", pick: "待选图", done: "已完成" }
@@ -61,6 +61,7 @@ function Projects() {
             </a>
           ))}
         </div>
+        <p class="muted small version">版本 {APP_VERSION}</p>
       </div>
     </>
   )
@@ -515,6 +516,7 @@ function App() {
     <>
       {view}
       <Toast />
+      <UpdateBanner />
     </>
   )
 }

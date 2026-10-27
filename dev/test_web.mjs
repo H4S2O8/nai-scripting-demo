@@ -188,8 +188,16 @@ console.log("the API, end to end")
     const post = (path, body, extra = { "x-nai-app": "1" }) =>
       as(path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", ...extra } })
 
-    const html = await (await as("/app")).text()
+    const page2 = await as("/app")
+    const html = await page2.text()
     check("the page loads for a member", html.includes("/app/assets/app.js"))
+    const version = (html.match(/name="nai-version" content="([0-9a-f]{10})"/) ?? [])[1]
+    check("the page carries its front-end version", !!version, html)
+    check("assets are loaded by versioned URL", html.includes(`/app/assets/app.js?v=${version}`) && html.includes(`/app/assets/style.css?v=${version}`))
+    check("the page itself is never cached", page2.headers.get("cache-control") === "no-store")
+    const live = await (await as("/api/version")).json()
+    check("the API reports the same version", live.version === version, JSON.stringify(live))
+    check("a versioned asset URL is served", (await as(`/app/assets/app.js?v=${version}`)).ok)
     const js = await as("/app/assets/app.js")
     check("the front end is served", js.ok && /javascript/.test(js.headers.get("content-type") ?? ""))
     check("its JSX was built for preact, not a stray factory", !(await js.text()).includes('createElement("header"'))

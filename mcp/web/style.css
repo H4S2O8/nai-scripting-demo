@@ -255,3 +255,19 @@ button.small { min-height: 32px; padding: 4px 10px; font-size: 13px; }
 .cover-preview img { cursor: default; }
 .editor details { margin: 0 0 10px; }
 .ready-cover { display: block; max-width: 260px; width: 100%; border-radius: 6px; margin: 8px 0; border: 1px solid var(--line); }
+
+/* A newer front end is on the server: one tap reloads. */
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: calc(100% - 32px);
+  background: var(--accent);
+  color: #111;
+  border: 0;
+  font-weight: 600;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.version { margin-top: 32px; text-align: center; }
