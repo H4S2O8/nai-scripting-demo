@@ -157,6 +157,14 @@ const http = createServer((req, res) => {
       return
     }
 
+    // Stateless mode has no standalone SSE stream and no session to delete.
+    // Answering GET with an endless stream instead stalls the POSTs behind it
+    // (clients such as dsh then time out on tools/list); 405 tells them to skip it.
+    if (req.method === "GET" || req.method === "DELETE") {
+      res.writeHead(405, { allow: "POST" }).end()
+      return
+    }
+
     // A fresh server and transport per request: stateless mode keeps no session
     // state, and sharing one transport across concurrent calls would let two
     // requests interleave on the same stream.

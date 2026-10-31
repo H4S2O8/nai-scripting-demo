@@ -302,6 +302,9 @@ console.log("http transport")
     (await fetch(base + "/images/..%2F..%2F..%2Fetc%2Fpasswd")).status === 404,
   )
   check("unknown paths 404", (await fetch(base + "/nope", authed)).status === 404)
+  // Stateless: no standalone SSE stream, so GET must not hang a stream open.
+  const sse = await fetch(base + "/mcp", { headers: { ...authed.headers, accept: "text/event-stream" } })
+  check("GET /mcp is 405, not an endless stream", sse.status === 405 && sse.headers.get("allow") === "POST")
 
   // OAuth, for clients (Gemini) that will not send a static header.
   const challenge = (await fetch(base + "/mcp", { method: "POST" })).headers.get("www-authenticate") ?? ""
