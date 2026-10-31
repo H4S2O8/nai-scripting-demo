@@ -426,7 +426,7 @@ export function Publish({ name }: { name: string }) {
     setItems(data.candidates.map((c: Item) => ({ ...c, selected: !c.blocked && !!c.route && !done.has(c.route) })))
     setSettings({
       ...settings,
-      appendTo: settings.appendTo || data.appendDefaults.galleryUrl || "",
+      appendTo: settings.appendTo || data.settings?.appendTo || data.appendDefaults.galleryUrl || "",
       containsGuro: settings.coverStyle === "ai_guro",
     })
   }

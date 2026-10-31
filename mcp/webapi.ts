@@ -297,7 +297,7 @@ async function publishApi(req: IncomingMessage, res: ServerResponse, method: str
     if (method === "GET" && parts.length === 3) {
       return send(res, 200, {
         settings: publisher.settings(project),
-        appendDefaults: publisher.appendDefaults(project),
+        appendDefaults: await publisher.appendDefaults(project),
         candidates: publisher.candidates(project),
         publications: publisher.publications(project),
         mascots: publisher.mascots(),

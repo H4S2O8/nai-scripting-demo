@@ -52,6 +52,9 @@ export type PublishSettings = {
   containsGuro?: boolean
 }
 
+/** Publisher job states whose pages never reached the site, or left it with a deleted draft. */
+const GONE = new Set(["failed", "no_changes", "draft_deleted"])
+
 const GALLERY_URL = /^https:\/\/e-hentai\.org\/g\/(\d+)\/[0-9a-f]+\/?$/
 
 /** One file of a novel's upload: a composed page, or the title page that opens a side story. */
@@ -439,7 +442,7 @@ export class Publisher {
     const { sheets, titles } = await this.withTitlePages(project, composed)
     const lines = contentsLines(sheets, titles, existing + 1)
     // The first side stories on a gallery of the main story alone: the contents start with it.
-    if (this.appendDefaults(project, id).publishedRoutes.length === 0) lines.unshift(`正文 p.2${existing > 2 ? "–" + existing : ""}`)
+    if ((await this.appendDefaults(project, id)).publishedRoutes.length === 0) lines.unshift(`正文 p.2${existing > 2 ? "–" + existing : ""}`)
     const result = await eh.call("append_to_collection", {
       image_urls: sheets.map((sheet) => sheet.url),
       collection_name: name,
@@ -451,13 +454,28 @@ export class Publisher {
     this.mark(id, { state: "preparing", ehJobId: String(result.json?.id ?? ""), progress: "" })
   }
 
-  /** What the publish page starts from when appending: the gallery to add to, and the side stories uploaded before. */
-  appendDefaults(project: string, except?: number) {
+  /**
+   * What the publish page starts from when appending: the gallery to add to,
+   * and the side stories uploaded before. Whether an upload still counts is
+   * the publisher's to say — a draft deleted on the site took its pages with
+   * it — so each earlier side-story upload's job is asked.
+   */
+  async appendDefaults(project: string, except?: number) {
     const row = this.projectId(project)
     const pages = new Map(new Studio(this.library()).listPages(row.name).map((p) => [p.id, p.route]))
-    const earlier = this.publications(row.name).filter((p) => p.state !== "failed" && p.id !== except)
-    const routes = new Set(earlier.flatMap((p) => p.items.map((item) => pages.get(item.pageId ?? 0) ?? "")).filter(Boolean))
-    const linked = earlier.find((p) => p.settings.galleryUrl)?.settings.galleryUrl ?? null
+    const routesOf = (p: { items: Item[] }) => p.items.map((item) => pages.get(item.pageId ?? 0) ?? "").filter(Boolean)
+    const earlier = []
+    for (const p of this.publications(row.name)) {
+      if (p.state === "failed" || p.id === except) continue
+      if (p.ehJobId && routesOf(p).length) {
+        const state = (await this.client().call("get_job", { job_id: p.ehJobId })).json?.state
+        if (GONE.has(state)) continue
+      }
+      earlier.push(p)
+    }
+    const routes = new Set(earlier.flatMap(routesOf))
+    // A linked gallery stays the gallery even if a later draft onto it was deleted.
+    const linked = this.publications(row.name).find((p) => p.state !== "failed" && p.settings.galleryUrl)?.settings.galleryUrl ?? null
     return { galleryUrl: linked, publishedRoutes: [...routes] }
   }
 

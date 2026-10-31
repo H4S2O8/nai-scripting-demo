@@ -310,7 +310,7 @@ console.log("side stories onto a published gallery")
   const only = (route) => picks.filter((x) => x.route === route).map(({ pageId, imageId }) => ({ pageId, imageId }))
   const url = "https://e-hentai.org/g/3600001/abcdef1234/"
   const append = { title: "", coverStyle: "ai", appendTo: url, acceptSiteTerms: true }
-  check("a fresh project has no side stories uploaded", pub.appendDefaults("补番外").publishedRoutes.length === 0)
+  check("a fresh project has no side stories uploaded", (await pub.appendDefaults("补番外")).publishedRoutes.length === 0)
   check("appending refuses main-story pages", await rejects(() => pub.start("补番外", only(""), append), /只放番外页/))
   check("appending needs the site terms", await rejects(() => pub.start("补番外", only("IF 1"), { ...append, acceptSiteTerms: false }), /上传条款/))
   check("appending needs a gallery link", await rejects(() => pub.start("补番外", only("IF 1"), { ...append, appendTo: "https://example.com/g/1/a/" }), /画廊的链接/))
@@ -336,7 +336,7 @@ console.log("side stories onto a published gallery")
         JSON.stringify(bar.steps) === JSON.stringify(["合成页面", "下载图片", "上传草稿"]) && bar.total === 3, JSON.stringify(bar))
   job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
 
-  const defaults = pub.appendDefaults("补番外")
+  const defaults = await pub.appendDefaults("补番外")
   check("the side stories uploaded before are known", defaults.publishedRoutes.join() === "IF 1")
   const collection = collections.get(register.args.collection_name)
   Object.assign(collection, { draft_id: "900", draft_url: "https://upld.e-hentai.org/managegallery?ulgid=900", draft_file_count: 63 + n1 })
@@ -350,7 +350,15 @@ console.log("side stories onto a published gallery")
   const other = await settled(pub.start("补番外", only("IF 2"), { ...append, appendTo: "https://e-hentai.org/g/3600999/abcdef1234/" }))
   check("another gallery while a draft waits is refused", /还没发布/.test(other.error ?? ""), JSON.stringify(other))
   await pub.linkPublished(first, "https://e-hentai.org/g/3600002/abcdef1234")
-  check("a linked gallery becomes the next default", pub.appendDefaults("补番外").galleryUrl === "https://e-hentai.org/g/3600002/abcdef1234/")
+  check("a linked gallery becomes the next default", (await pub.appendDefaults("补番外")).galleryUrl === "https://e-hentai.org/g/3600002/abcdef1234/")
+  job = { state: "draft_deleted" }
+  const gone = await pub.appendDefaults("补番外")
+  check("a draft deleted on the site no longer counts as uploaded", gone.publishedRoutes.length === 0 && gone.galleryUrl, JSON.stringify(gone))
+  calls.length = 0
+  await settled(pub.start("补番外", only("IF 1"), append))
+  check("so the next append starts the contents with the main story again",
+        calls.find((x) => x.name === "append_to_collection").args.toc_lines[0].startsWith("正文 p.2"))
+  job = { state: "prepared", cover: { preview_url: "https://x/c.png" } }
 }
 
 console.log("cover preview and mascots")
