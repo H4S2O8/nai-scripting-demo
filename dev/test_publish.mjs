@@ -126,14 +126,22 @@ st.createProject({ name: "画集", kind: "gallery" })
 const shotA = st.setShot({ project: "画集", spec: { title: "第一个", prompt: "a" } })
 const shotB = st.setShot({ project: "画集", spec: { title: "第二个", prompt: "b" } })
 const a1 = image("画集", shotA.id), a2 = image("画集", shotA.id), b1 = image("画集", shotB.id)
-st.verdict([a1, a2, b1], "pick", "human")
+st.verdict([a2, b1], "pick", "human")
+st.verdict([a1], "pick", "human") // a1 becomes shot A's main image, a2 goes back to the candidates
+st.place(shotB.id, { before: shotA.id })
+const shotC = st.setShot({ project: "画集", place: false, spec: { title: "定妆", prompt: "c" } })
+const c1 = image("画集", shotC.id)
+st.verdict([c1], "pick", "human")
 const loose = image("画集", null)
 const archived = image("画集", null, { stored: "archive", url: null })
 {
   const c = pub.candidates("画集")
-  check("picked images come first, oldest shot first, in pick order",
-        JSON.stringify(c.filter((x) => x.selected).map((x) => x.imageId)) === JSON.stringify([a1, a2, b1]),
+  check("the mainline comes first, in mainline order, one main image per shot",
+        JSON.stringify(c.filter((x) => x.selected).map((x) => x.imageId)) === JSON.stringify([b1, a1]),
         JSON.stringify(c.map((x) => x.imageId)))
+  check("a candidate that is not the main image is not offered", !c.some((x) => x.imageId === a2))
+  check("a shot off the mainline is offered but not selected", c.some((x) => x.imageId === c1 && !x.selected && /主线外/.test(x.label)))
+  check("mainline labels carry the position", c.find((x) => x.imageId === b1)?.label === "1. 第二个")
   check("loose images are offered but not selected", c.some((x) => x.imageId === loose && !x.selected && !x.blocked))
   check("an archived image is blocked, with the reason", c.some((x) => x.imageId === archived && /Mac 备份/.test(x.blocked ?? "")))
 }

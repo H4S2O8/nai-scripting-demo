@@ -60,8 +60,8 @@ export type NewImage = {
 
 /**
  * Where an image stands within its shot. Null for images drawn outside any
- * shot. A novel shot has at most one `picked`; a gallery shot keeps as many as
- * it likes.
+ * shot. A shot has at most one `picked` — its main image, the page's picture
+ * in a novel, the panel's in a gallery; everything else is a candidate.
  */
 export type Verdict = "candidate" | "picked" | "rejected"
 
@@ -291,8 +291,11 @@ export class Library {
    * composed novel pages kept on R2, and each project's last publish settings;
    * 5 side stories — a chapter's route ('' for the main story, else the label
    * of the extra it belongs to, e.g. "IF 1") — and the size of each composed
-   * page, so a route's title page can match the pages around it. Each step only adds columns and tables, so a live database upgrades in
-   * place.
+   * page, so a route's title page can match the pages around it; 6 a
+   * gallery's mainline — each shot's place in the ordered sequence, null for
+   * shots kept off it — and one main image per gallery shot. Each step only
+   * adds columns and tables, so a live database upgrades in place; step 6 also
+   * demotes extra picks, to starred candidates so none is lost.
    */
   private migrate() {
     const version = this.db.pragma("user_version", { simple: true }) as number
@@ -339,6 +342,22 @@ export class Library {
         if (!has("page_renders", "width")) this.db.exec("ALTER TABLE page_renders ADD COLUMN width INTEGER")
         if (!has("page_renders", "height")) this.db.exec("ALTER TABLE page_renders ADD COLUMN height INTEGER")
         this.db.pragma("user_version = 5")
+      })()
+    }
+    if (version < 6) {
+      this.db.transaction(() => {
+        const has = (this.db.prepare("SELECT 1 FROM pragma_table_info('shots') WHERE name = 'seq'").get() ?? null) !== null
+        if (!has) this.db.exec("ALTER TABLE shots ADD COLUMN seq INTEGER")
+        const gallery = "SELECT s.id FROM shots s JOIN projects p ON p.id = s.project_id WHERE p.kind = 'gallery'"
+        // Existing shots join the mainline in the order they were made, which is the order they were published in.
+        this.db.exec(`UPDATE shots SET seq = (SELECT count(*) FROM shots t WHERE t.project_id = shots.project_id AND t.id <= shots.id)
+                      WHERE id IN (${gallery})`)
+        // The newest pick stays the shot's main image; any others become starred candidates.
+        this.db.exec(`UPDATE images SET verdict = 'candidate', favorite = 1
+                      WHERE verdict = 'picked' AND shot_id IN (${gallery})
+                        AND id <> (SELECT n.id FROM images n WHERE n.shot_id = images.shot_id AND n.verdict = 'picked'
+                                   ORDER BY n.created_at DESC, n.id DESC LIMIT 1)`)
+        this.db.pragma("user_version = 6")
       })()
     }
   }

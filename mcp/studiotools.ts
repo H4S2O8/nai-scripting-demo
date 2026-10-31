@@ -52,7 +52,20 @@ function pageLine(p: PageRow): string {
 function shotLine(s: Shot): string {
   const label = s.title || (s.pageId ? `页 #${s.pageId}` : "（脱页）")
   const prompt = s.prompt.length > 120 ? s.prompt.slice(0, 120) + "…" : s.prompt || "（还没写提示词）"
-  return `镜头 #${s.id} · ${label} · ${STATUS_LABEL[s.status]} · ${counts(s.counts)}\n  ${prompt}`
+  const place = s.kind === "gallery" ? (s.seq !== null ? `第 ${s.seq} 格 · ` : "主线外 · ") : ""
+  return `${place}镜头 #${s.id} · ${label} · ${STATUS_LABEL[s.status]} · ${counts(s.counts)}\n  ${prompt}`
+}
+
+/** A gallery's mainline at a glance: one line per panel, then how many shots are off it. */
+function mainline(s: Studio, project: string): string {
+  const shots = s.listShots(project)
+  const on = shots.filter((x) => x.seq !== null)
+  const off = shots.filter((x) => x.seq === null)
+  return [
+    `「${project}」主线 ${on.length} 格：`,
+    ...on.map((x) => `  ${x.seq}. #${x.id} ${x.title || "（无标题）"} · ${STATUS_LABEL[x.status]}`),
+    off.length ? `主线外 ${off.length} 个：${off.map((x) => `#${x.id}`).join(" ")}` : "",
+  ].filter(Boolean).join("\n")
 }
 
 function candidateLine(row: ImageRow): string {
@@ -102,8 +115,8 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
     {
       title: "Studio projects",
       description:
-        "Projects live on the server. A `gallery` is a set of shots (concepts), each drawn several " +
-        "times, keeping the good candidates. A `novel` is chapters of text cut into pages, each " +
+        "Projects live on the server. A `gallery` is a mainline: an ordered sequence of shots, one " +
+        "panel each, with one picked main image per shot (see novelai_shot). A `novel` is chapters of text cut into pages, each " +
         "page with at most one shot and, in the end, one picked picture. A project also holds the " +
         "shared style (guidance and the prompt text to reuse — never inserted for you), character " +
         "sheets (appearance tags and outfits, for consistent prompts), layout settings and who " +
@@ -285,18 +298,31 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
       title: "Shots: what to draw",
       description:
         "A shot is a place that needs a picture, holding the final prompt — sent verbatim, as with " +
-        "novelai_generate_image (see novelai_guide). In a novel each page has at most one shot " +
-        "(pass pageId); in a gallery a shot is a concept with a title. Actions: set (create, or " +
-        "change the fields you pass; shotId + pageId re-attaches a detached shot); get (full " +
-        "spec plus every candidate with its verdict); list (a project's shots, optionally by " +
-        "status); adopt (shotId + imageIds: make images already in the library — e.g. drawn with " +
-        "novelai_generate_image — candidates of this shot, so they can be picked. Images in " +
-        "another shot or archived are refused).",
+        "novelai_generate_image (see novelai_guide). Every shot ends with one picked main image; " +
+        "everything else drawn for it stays a candidate. In a novel each page has at most one shot " +
+        "(pass pageId). A gallery is a mainline: an ordered sequence of shots, one panel each, that " +
+        "is what gets published; a shot can also sit off the mainline (character sheet, discarded " +
+        "take). Redrawing the same panel — another seed, another style — means drawing more " +
+        "candidates for that shot, not a new shot. Actions: set (create, or change the fields you " +
+        "pass; a new gallery shot is appended to the mainline, or placed by before/after/at, or kept " +
+        "off it with offLine; shotId + pageId re-attaches a detached shot); get (full spec plus " +
+        "every candidate with its verdict); list (a project's shots, a gallery's in mainline order, " +
+        "optionally by status); place (shotId: insert onto the mainline before or after another " +
+        "shot, at a 1-based position, or with none of these append; a shot already on it moves); " +
+        "unplace (shotId: take it off the mainline, keeping its images); merge (shotId + shotIds: " +
+        "fold those duplicate shots into this one, their images becoming its candidates, then " +
+        "delete them); adopt (shotId + imageIds: make images already in the library — e.g. drawn " +
+        "with novelai_generate_image — candidates of this shot. Images in another shot or archived " +
+        "are refused).",
       inputSchema: {
-        action: z.enum(["set", "get", "list", "adopt"]),
+        action: z.enum(["set", "get", "list", "place", "unplace", "merge", "adopt"]),
         project: z.string().optional().describe("set and list."),
         shotId: z.number().int().optional(),
-        shotIds: z.array(z.number().int()).max(20).optional().describe("get."),
+        shotIds: z.array(z.number().int()).max(20).optional().describe("get; merge: the shots to fold in."),
+        before: z.number().int().optional().describe("set/place: a shot id on the mainline to go before."),
+        after: z.number().int().optional().describe("set/place: a shot id on the mainline to go after."),
+        at: z.number().int().min(1).optional().describe("set/place: 1-based mainline position."),
+        offLine: z.boolean().optional().describe("set: keep a new gallery shot off the mainline."),
         imageIds: z.array(z.number().int()).min(1).max(50).optional().describe("adopt: library image ids."),
         pageId: z.number().int().optional(),
         status: z.enum(["shot", "draw", "pick", "done"]).optional(),
@@ -320,6 +346,17 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
           if (!args.project) return text("list 要给 project", true)
           const shots = s.listShots(args.project, args.status)
           return text(shots.length ? shots.map(shotLine).join("\n") : "没有符合条件的镜头。")
+        }
+        const where = { before: args.before, after: args.after, at: args.at }
+        if (args.action === "place" || args.action === "unplace") {
+          if (!args.shotId) return text(`${args.action} 要给 shotId`, true)
+          const shot = args.action === "place" ? s.place(args.shotId, where) : s.unplace(args.shotId)
+          return text((args.action === "place" ? "已放上主线" : "已移出主线") + "\n" + mainline(s, shot.project))
+        }
+        if (args.action === "merge") {
+          if (!args.shotId || !args.shotIds?.length) return text("merge 要给 shotId（留下的）和 shotIds（并进来的）", true)
+          const shot = s.merge(args.shotId, args.shotIds)
+          return text(`已并入镜头 #${shot.id}：${counts(shot.counts)}\n` + (shot.kind === "gallery" ? mainline(s, shot.project) : shotLine(shot)))
         }
         if (args.action === "adopt") {
           if (!args.shotId || !args.imageIds?.length) return text("adopt 要给 shotId 和 imageIds", true)
@@ -350,6 +387,7 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
           project: args.project,
           shotId: args.shotId,
           pageId: args.pageId,
+          place: args.offLine ? false : [args.before, args.after, args.at].some((x) => x !== undefined) ? where : undefined,
           spec: {
             title: args.title,
             prompt: args.prompt,
@@ -476,8 +514,8 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
       title: "Decide on candidates",
       description:
         "Mark candidates: favorite / unfavorite (a recommendation, always allowed), pick (the " +
-        "chosen picture — a novel shot keeps one, picking another returns the old one to the " +
-        "candidates; a gallery shot keeps many), reject, or reset to candidate. pick is refused " +
+        "shot's main image — a shot keeps one, picking another returns the old one to the " +
+        "candidates), reject, or reset to candidate. pick is refused " +
         "unless the project's picker is agent: by default a person makes the final choice. When " +
         "the user names the image to use in the conversation, pass decidedBy: user — that is " +
         "their pick, recorded as such. Never pass it for your own choice.",

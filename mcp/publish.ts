@@ -1,8 +1,8 @@
 /**
  * Publishing a project to E-Hentai, through the publisher MCP on this host.
  *
- * A gallery uploads the images picked in its shots, in shot order, and
- * whichever loose images the person adds. A novel uploads its composed pages —
+ * A gallery uploads its mainline — each shot's main image, in mainline order —
+ * and whichever other images the person adds. A novel uploads its composed pages —
  * the picture with the page's text, laid out as the review page shows it — in
  * page order; each composed page is uploaded to R2 once and remembered, so a
  * second attempt does not redo the work.
@@ -89,7 +89,7 @@ export type Candidate = {
   /** A novel page's side story, '' on the main story. */
   route?: string
   label: string
-  /** On by default: picked in a shot (gallery) or a finished page (novel). */
+  /** On by default: a mainline shot's main image (gallery) or a finished page (novel). */
   selected: boolean
   /** Why it cannot be uploaded, if it cannot. */
   blocked?: string
@@ -176,13 +176,16 @@ export class Publisher {
         }),
       )
     }
-    const shots = studio.galleryOverview(row.name).slice().reverse() // oldest shot first
+    // The mainline in order, one main image per panel; shots off it are offered but not selected.
+    const shots = studio.galleryOverview(row.name)
     const picked = shots.flatMap((shot) =>
       this.library()
-        .get(shot.picked.slice().reverse())
+        .get(shot.picked)
         .map((image): Candidate => {
           const blocked = this.uploadable(image) ? undefined : "只在 Mac 备份里，线上没有原图"
-          return { imageId: image.id, label: shot.title || `镜头 #${shot.id}`, selected: !blocked, blocked }
+          const title = shot.title || `镜头 #${shot.id}`
+          const onLine = shot.seq !== null
+          return { imageId: image.id, label: onLine ? `${shot.seq}. ${title}` : `主线外 · ${title}`, selected: onLine && !blocked, blocked }
         }),
     )
     const loose = studio.looseImages(row.name, 500).images.reverse().map((image): Candidate => {

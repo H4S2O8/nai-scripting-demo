@@ -230,6 +230,20 @@ console.log("the API, end to end")
     const bad = await post("/api/feedback", { project: "书", target: "image", body: "x" })
     check("a note on an image needs its id", bad.status === 400)
 
+    {
+      const side = new S.Studio(new L.Library(join(dir, "library.db")))
+      side.createProject({ name: "漫画", kind: "gallery" })
+      const [p1, p2] = ["一", "二"].map((title) => side.setShot({ project: "漫画", spec: { title } }).id)
+      side.library.close()
+      const moved = await post(`/api/shots/${p2}/place`, { at: 1 })
+      check("a person can move a shot along the mainline", moved.ok && (await moved.json()).seq === 1)
+      const off = await post(`/api/shots/${p1}/unplace`, {})
+      check("and take one off it", off.ok && (await off.json()).seq === null)
+      const comic = await (await as("/api/projects/" + encodeURIComponent("漫画"))).json()
+      check("the project lists the mainline first", comic.shots.map((x) => `${x.id}:${x.seq}`).join() === `${p2}:1,${p1}:null`, JSON.stringify(comic.shots.map((x) => [x.id, x.seq])))
+      check("moving without the app header is refused", (await post(`/api/shots/${p1}/place`, {}, {})).status === 403)
+    }
+
     // What the agent sees, from the same database.
     const seen = new S.Studio(new L.Library(join(dir, "library.db")))
     check("the agent sees the person's pick", seen.candidates(shot.id).find((c) => c.id === ids[1]).verdict === "picked")

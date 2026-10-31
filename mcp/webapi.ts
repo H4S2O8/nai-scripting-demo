@@ -207,6 +207,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
     return send(res, 200, studio.verdict(body.imageIds.map(Number), body.action, "human"))
   }
 
+  if (method === "POST" && parts[0] === "shots" && parts[2] === "place") {
+    const body = await readJson(req)
+    const pick = (k: string) => (body[k] == null ? undefined : Number(body[k]))
+    return send(res, 200, studio.place(Number(parts[1]), { before: pick("before"), after: pick("after"), at: pick("at") }))
+  }
+  if (method === "POST" && parts[0] === "shots" && parts[2] === "unplace") return send(res, 200, studio.unplace(Number(parts[1])))
+
   if (method === "POST" && parts[0] === "shots" && parts[2] === "adopt") {
     const body = await readJson(req)
     if (!Array.isArray(body.imageIds) || body.imageIds.length === 0) throw new Error("需要 imageIds")

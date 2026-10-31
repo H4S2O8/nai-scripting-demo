@@ -157,6 +157,20 @@ console.log("mcp server over stdio")
   check("the review lists the shot waiting to be drawn", /待抽卡/.test(review.content[0].text), review.content[0].text)
   const shotTool = tools.find((t) => t.name === "novelai_shot")
   check("shots can adopt library images", shotTool.inputSchema.properties.action.enum.includes("adopt") && shotTool.inputSchema.properties.imageIds != null)
+  {
+    await client.callTool({ name: "novelai_project", arguments: { action: "create", name: "Test Comic", kind: "gallery" } })
+    const set = async (title, extra = {}) => Number(((await client.callTool({ name: "novelai_shot", arguments: { action: "set", project: "Test Comic", title, ...extra } })).content[0].text.match(/镜头 #(\d+)/) ?? [])[1])
+    const a = await set("A"), c = await set("C")
+    const b = await set("B", { before: c })
+    await set("sheet", { offLine: true })
+    const listed = (await client.callTool({ name: "novelai_shot", arguments: { action: "list", project: "Test Comic" } })).content[0].text
+    check("a gallery lists its mainline in order, then shots off it",
+          /第 1 格 · 镜头 #\d+ · A[\s\S]*第 2 格 · 镜头 #\d+ · B[\s\S]*第 3 格 · 镜头 #\d+ · C[\s\S]*主线外 · 镜头 #\d+ · sheet/.test(listed), listed)
+    const moved = (await client.callTool({ name: "novelai_shot", arguments: { action: "place", shotId: a, after: c } })).content[0].text
+    check("place moves a shot and shows the mainline", new RegExp(`1\\. #${b} B[\\s\\S]*2\\. #${c} C[\\s\\S]*3\\. #${a} A`).test(moved), moved)
+    const merged = await client.callTool({ name: "novelai_shot", arguments: { action: "merge", shotId: b, shotIds: [a] } })
+    check("merge folds a shot in", /已并入镜头/.test(merged.content[0].text) && /主线 2 格/.test(merged.content[0].text), merged.content[0].text)
+  }
   check("draws can take exact seeds", tools.find((t) => t.name === "novelai_draw").inputSchema.properties.seeds != null)
   const unknownArg = await client.callTool({ name: "novelai_library_update", arguments: { ids: [1], shotId: 13 } }).catch((e) => ({ isError: true, content: [{ text: String(e.message ?? e) }] }))
   check("a parameter a tool does not declare is an error, not silently dropped",

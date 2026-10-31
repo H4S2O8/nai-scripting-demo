@@ -144,25 +144,41 @@ function Project({ name }: { name: string }) {
               )
             })
           : (
-            <div class="tiles" style={{ marginTop: "12px" }}>
-              {project.shots.filter((s: any) => keep(s.status)).map((s: any) => (
-                <a class="tile" href={href("p", name, "shot", s.id)} key={s.id}>
-                  <div class="frame">
-                    {s.picked.length || s.cover ? (
-                      <img src={thumb(s.picked[0] ?? s.cover)} alt="" loading="lazy" class={s.picked.length ? "" : "standin"} />
-                    ) : (
-                      <div class="excerpt">{s.title}</div>
-                    )}
-                  </div>
-                  <div class="label">
-                    <span>{s.title || `镜头 #${s.id}`}</span>
-                    <span class={"chip " + (s.status === "pick" ? "pick" : s.status === "done" ? "done" : "")}>
-                      {s.status === "done" ? `保留 ${s.picked.length}` : STATUS[s.status]}
-                    </span>
-                  </div>
-                </a>
-              ))}
-            </div>
+            <>
+              {[
+                ["主线", project.shots.filter((s: any) => s.seq != null), "按顺序发布，每格用它选中的那张图。"],
+                ["主线外", project.shots.filter((s: any) => s.seq == null), "定妆图、废案之类：保留着，但不发布。"],
+              ].map(([title, shots, hint]: any) => {
+                const shown = shots.filter((s: any) => keep(s.status))
+                if (!shots.length) return null
+                return (
+                  <section key={title}>
+                    <h2>{title}（{shots.length}）</h2>
+                    <p class="muted small">{hint}</p>
+                    <div class="tiles">
+                      {shown.map((s: any) => (
+                        <a class="tile" href={href("p", name, "shot", s.id)} key={s.id}>
+                          <div class="frame">
+                            {s.picked.length || s.cover ? (
+                              <img src={thumb(s.picked[0] ?? s.cover)} alt="" loading="lazy" class={s.picked.length ? "" : "standin"} />
+                            ) : (
+                              <div class="excerpt">{s.title}</div>
+                            )}
+                          </div>
+                          <div class="label">
+                            <span>{s.seq != null ? `${s.seq}. ` : ""}{s.title || `镜头 #${s.id}`}</span>
+                            <span class={"chip " + (s.status === "pick" ? "pick" : s.status === "done" ? "done" : "")}>
+                              {STATUS[s.status]}
+                              {s.status === "pick" ? ` ${s.counts.candidate}` : ""}
+                            </span>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+            </>
           )}
         {project.loose.total ? (
           <section>
@@ -484,10 +500,33 @@ function Shot({ name, id }: { name: string; id: number }) {
   if (error) return <><Bar title="镜头" back={href("p", name)} /><div class="wrap"><p class="muted">{error}</p></div></>
   if (!detail) return <Bar title="镜头" back={href("p", name)} />
   const s = detail.shot
+  const move = async (path: string, body: unknown, done: string) => {
+    try {
+      await call(`/api/shots/${s.id}/${path}`, body)
+      showToast(done)
+      reload()
+    } catch (e: any) {
+      showToast(e.message, true)
+    }
+  }
   return (
     <>
       <Bar title={s.title || `镜头 #${s.id}`} back={href("p", name)} />
       <div class="wrap">
+        {s.kind === "gallery" ? (
+          <div class="row" style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
+            <span class="muted small">{s.seq != null ? `主线第 ${s.seq} 格` : "不在主线上"}</span>
+            {s.seq != null ? (
+              <>
+                <button disabled={s.seq === 1} onClick={() => move("place", { at: s.seq - 1 }, "已前移")}>前移</button>
+                <button onClick={() => move("place", { at: s.seq + 1 }, "已后移")}>后移</button>
+                <button onClick={() => move("unplace", {}, "已移出主线")}>移出主线</button>
+              </>
+            ) : (
+              <button onClick={() => move("place", {}, "已放到主线末尾")}>放回主线</button>
+            )}
+          </div>
+        ) : null}
         <div class="preview">
           {current ? (
             <img src={thumb(current.id)} alt={`#${current.id}`} onClick={() => setZoom(current.url)} />

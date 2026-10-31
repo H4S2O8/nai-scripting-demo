@@ -1,10 +1,12 @@
 /**
  * The studio: projects as structured work, on top of the image library.
  *
- * Two kinds of project share one model. A gallery is a set of shots, each a
- * concept that is drawn several times and keeps whichever candidates are good.
- * A novel is chapters of text, cut into pages; each page may have one shot,
- * and a novel shot ends with exactly one picked image — the page's picture.
+ * Two kinds of project share one model. A gallery is a mainline: an ordered
+ * sequence of shots, each one panel, drawn as many times as it takes; shots
+ * can also sit off the mainline (a character sheet, a discarded take) and are
+ * then kept but not published. A novel is chapters of text, cut into pages;
+ * each page may have one shot. Either way a shot ends with exactly one picked
+ * image, its main image; every other drawing stays a candidate.
  *
  * Every drawing is a candidate first. Whether a candidate is picked is the
  * project's `picker`'s call: by default a person, in the review page, with the
@@ -63,6 +65,9 @@ export type Character = {
 
 export type ShotCaption = { prompt: string; negative?: string; x?: number; y?: number }
 
+/** Where a shot goes on the mainline: before or after a shot on it, or at a 1-based position; none of these appends. */
+export type Place = { before?: number; after?: number; at?: number }
+
 export type ShotSpec = {
   title?: string
   prompt?: string
@@ -82,6 +87,8 @@ export type Shot = {
   project: string
   kind: Kind
   pageId: number | null
+  /** A gallery shot's place on the mainline, from 1; null when it is off it (and for novel shots). */
+  seq: number | null
   title: string
   prompt: string
   negative: string
@@ -263,7 +270,7 @@ export class Studio {
     const byStatus: Record<ShotStatus, number> = { shot: 0, draw: 0, pick: 0, done: 0 }
     for (const shot of shots) if (shot.pageId !== null || kind === "gallery") byStatus[shot.status]++
     const open = (this.db.prepare("SELECT count(*) AS n FROM feedback WHERE project_id = ? AND resolved_at IS NULL").get(projectId) as { n: number }).n
-    if (kind === "gallery") return { shots: shots.length, ...byStatus, openFeedback: open }
+    if (kind === "gallery") return { shots: shots.length, mainline: shots.filter((s) => s.seq !== null).length, ...byStatus, openFeedback: open }
     const pages = (this.db
       .prepare("SELECT count(*) AS n FROM pages p JOIN chapters c ON c.id = p.chapter_id WHERE c.project_id = ?")
       .get(projectId) as { n: number }).n
@@ -523,7 +530,7 @@ export class Studio {
            (SELECT count(*) FROM images i WHERE i.shot_id = s.id AND i.verdict = 'picked') AS n_picked,
            (SELECT count(*) FROM images i WHERE i.shot_id = s.id AND i.verdict = 'rejected') AS n_rejected,
            (SELECT count(*) FROM images i WHERE i.shot_id = s.id AND i.favorite = 1 AND i.verdict <> 'rejected') AS n_favorite
-         FROM shots s JOIN projects p ON p.id = s.project_id WHERE ${where} ORDER BY s.id`,
+         FROM shots s JOIN projects p ON p.id = s.project_id WHERE ${where} ORDER BY s.seq IS NULL, s.seq, s.id`,
       )
       .all(...args) as any[]
     return rows.map((r) => {
@@ -533,6 +540,7 @@ export class Studio {
         project: r.project,
         kind: r.kind,
         pageId: r.page_id,
+        seq: r.seq,
         title: r.title,
         prompt: r.prompt,
         negative: r.negative,
@@ -576,10 +584,11 @@ export class Studio {
 
   /**
    * Create or change a shot. A novel shot hangs on a page (one per page); a
-   * gallery shot stands alone with a title. Passing shotId edits that shot —
-   * and with pageId, moves a detached shot onto a page.
+   * gallery shot stands alone with a title, and a new one goes to the end of
+   * the mainline unless `place` says where (or `false`: off it). Passing shotId
+   * edits that shot — and with pageId, moves a detached shot onto a page.
    */
-  setShot(input: { project: string; shotId?: number; pageId?: number; spec: ShotSpec }): Shot {
+  setShot(input: { project: string; shotId?: number; pageId?: number; place?: Place | false; spec: ShotSpec }): Shot {
     return this.db.transaction(() => {
       const row = this.projectRow(input.project)
       const spec = input.spec
@@ -589,6 +598,7 @@ export class Studio {
           if ((c.x == null) !== (c.y == null)) throw new Error("角色坐标 x、y 要么都给，要么都不给")
         }
       }
+      if (input.place !== undefined && row.kind !== "gallery") throw new Error("只有图集有主线，小说的镜头跟着页走")
       let shotId = input.shotId
       if (input.pageId !== undefined) {
         if (row.kind !== "novel") throw new Error("图集项目的镜头不挂在页上")
@@ -633,7 +643,103 @@ export class Studio {
       for (const [column, value] of fields) {
         if (value !== undefined) this.db.prepare(`UPDATE shots SET ${column} = ?, updated_at = ? WHERE id = ?`).run(value, now(), shotId)
       }
+      const created = input.shotId === undefined
+      if (input.place === false) this.unplace(shotId)
+      else if (input.place || (created && row.kind === "gallery")) this.place(shotId, input.place ?? {})
       return this.getShots([shotId])[0]
+    })()
+  }
+
+  /* ------------------------------------------------------------ mainline */
+
+  /** A gallery's mainline, as shot ids in order. */
+  private line(projectId: number): number[] {
+    return (this.db.prepare("SELECT id FROM shots WHERE project_id = ? AND seq IS NOT NULL ORDER BY seq, id").all(projectId) as { id: number }[]).map((r) => r.id)
+  }
+
+  /** Number the mainline 1..n in this order; shots of the project not in it go off it. */
+  private renumber(projectId: number, order: number[]) {
+    this.db.prepare("UPDATE shots SET seq = NULL WHERE project_id = ?").run(projectId)
+    const set = this.db.prepare("UPDATE shots SET seq = ? WHERE id = ?")
+    order.forEach((id, i) => set.run(i + 1, id))
+  }
+
+  private galleryShot(shotId: number) {
+    const shot = this.getShots([shotId])[0]
+    const row = this.projectRow(shot.project)
+    if (row.kind !== "gallery") throw new Error(`镜头 #${shotId} 属于小说「${row.name}」；只有图集有主线`)
+    return { shot, row }
+  }
+
+  /**
+   * Put a gallery shot on the mainline: before or after another shot on it,
+   * at a position (1 is the first; past the end appends), or with none of
+   * these at the end. A shot already on the mainline moves.
+   */
+  place(shotId: number, where: Place = {}): Shot {
+    return this.db.transaction(() => {
+      const { row } = this.galleryShot(shotId)
+      const given = [where.before, where.after, where.at].filter((x) => x !== undefined).length
+      if (given > 1) throw new Error("before、after、at 只能给一个")
+      const order = this.line(row.id).filter((id) => id !== shotId)
+      let index = order.length
+      const anchor = where.before ?? where.after
+      if (anchor !== undefined) {
+        if (anchor === shotId) throw new Error("不能以镜头自己为参照")
+        const at = order.indexOf(anchor)
+        if (at < 0) throw new Error(`镜头 #${anchor} 不在「${row.name}」的主线上`)
+        index = where.before !== undefined ? at : at + 1
+      } else if (where.at !== undefined) {
+        if (!Number.isInteger(where.at) || where.at < 1) throw new Error("at 是从 1 开始的位置")
+        index = Math.min(where.at - 1, order.length)
+      }
+      order.splice(index, 0, shotId)
+      this.renumber(row.id, order)
+      return this.getShots([shotId])[0]
+    })()
+  }
+
+  /** Take a gallery shot off the mainline; it keeps its images and can go back on later. */
+  unplace(shotId: number): Shot {
+    return this.db.transaction(() => {
+      const { row } = this.galleryShot(shotId)
+      this.renumber(row.id, this.line(row.id).filter((id) => id !== shotId))
+      return this.getShots([shotId])[0]
+    })()
+  }
+
+  /**
+   * Fold other shots into this one — a panel that was drawn again under a new
+   * shot, say in another style — so their images become its candidates and
+   * the duplicates go away. Picks from the others become starred candidates;
+   * if this shot had no main image yet, the newest of them becomes it. Their
+   * feedback moves along. A shot on a novel page cannot be folded away.
+   */
+  merge(intoId: number, fromIds: number[]): Shot {
+    return this.db.transaction(() => {
+      const into = this.getShots([intoId])[0]
+      const from = this.getShots([...new Set(fromIds)].filter((id) => id !== intoId))
+      if (from.length === 0) throw new Error("要给至少一个别的镜头来合并")
+      for (const shot of from) {
+        if (shot.project !== into.project) throw new Error(`镜头 #${shot.id} 属于「${shot.project}」，不是「${into.project}」`)
+        if (shot.pageId !== null) throw new Error(`镜头 #${shot.id} 挂在页 #${shot.pageId} 上，不能合并掉`)
+      }
+      const ids = from.map((s) => s.id)
+      const marks = ids.map(() => "?").join(",")
+      const newestPick = this.db
+        .prepare(`SELECT id FROM images WHERE verdict = 'picked' AND shot_id IN (${marks}) ORDER BY created_at DESC, id DESC LIMIT 1`)
+        .get(...ids) as { id: number } | undefined
+      this.db.prepare(`UPDATE images SET verdict = 'candidate', favorite = 1 WHERE verdict = 'picked' AND shot_id IN (${marks})`).run(...ids)
+      this.db.prepare(`UPDATE images SET shot_id = ? WHERE shot_id IN (${marks})`).run(intoId, ...ids)
+      if (into.counts.picked === 0 && newestPick) {
+        this.db.prepare("UPDATE images SET verdict = 'picked', favorite = 0 WHERE id = ?").run(newestPick.id)
+      }
+      this.db.prepare(`UPDATE feedback SET target_id = ? WHERE target = 'shot' AND target_id IN (${marks})`).run(intoId, ...ids)
+      const projectId = this.projectRow(into.project).id
+      const line = this.line(projectId).filter((id) => !ids.includes(id))
+      this.db.prepare(`DELETE FROM shots WHERE id IN (${marks})`).run(...ids)
+      if (into.kind === "gallery") this.renumber(projectId, line)
+      return this.getShots([intoId])[0]
     })()
   }
 
@@ -673,8 +779,8 @@ export class Studio {
 
   /**
    * Decide on candidates. `pick` is reserved for the project's picker: the
-   * agent may only `favorite` unless the project lets it choose. Picking in a
-   * novel shot returns the previously picked image to the candidates.
+   * agent may only `favorite` unless the project lets it choose. A shot has
+   * one main image, so picking returns the previous one to the candidates.
    */
   verdict(imageIds: number[], action: "pick" | "reject" | "reset" | "favorite" | "unfavorite", by: Actor) {
     return this.db.transaction(() => {
@@ -691,9 +797,7 @@ export class Studio {
           )
         }
         if (action === "pick") {
-          if (project.kind === "novel") {
-            this.db.prepare("UPDATE images SET verdict = 'candidate' WHERE shot_id = ? AND verdict = 'picked' AND id <> ?").run(shot.id, image.id)
-          }
+          this.db.prepare("UPDATE images SET verdict = 'candidate' WHERE shot_id = ? AND verdict = 'picked' AND id <> ?").run(shot.id, image.id)
           this.db.prepare("UPDATE images SET verdict = 'picked' WHERE id = ?").run(image.id)
         } else if (action === "reject") {
           this.db.prepare("UPDATE images SET verdict = 'rejected', favorite = 0 WHERE id = ?").run(image.id)
@@ -709,7 +813,7 @@ export class Studio {
 
   /* ----------------------------------------------------- web read views */
 
-  /** The picked image of each shot (the newest, for a gallery that keeps several). */
+  /** The picked image of each shot. */
   private picks(shotIds: number[]): Map<number, number[]> {
     const out = new Map<number, number[]>()
     if (shotIds.length === 0) return out
@@ -766,9 +870,9 @@ export class Studio {
     }))
   }
 
-  /** A gallery's shots, newest first, each with its kept images. */
+  /** A gallery's shots: the mainline in order, then the ones off it, each with its main image. */
   galleryOverview(project: string) {
-    const shots = this.listShots(project).reverse()
+    const shots = this.listShots(project)
     const picks = this.picks(shots.map((s) => s.id))
     const covers = this.covers(shots.map((s) => s.id))
     return shots.map((s) => ({ ...s, picked: picks.get(s.id) ?? [], cover: covers.get(s.id) ?? null }))
