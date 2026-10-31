@@ -81,6 +81,11 @@ function sendFile(res: ServerResponse, file: URL, type: string) {
   res.end(readFileSync(path))
 }
 
+function shotIdList(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("需要 shotIds")
+  return value.map(Number)
+}
+
 async function readJson(req: IncomingMessage, limit = 64 * 1024): Promise<any> {
   const chunks: Buffer[] = []
   let size = 0
@@ -207,12 +212,19 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, visitor:
     return send(res, 200, studio.verdict(body.imageIds.map(Number), body.action, "human"))
   }
 
-  if (method === "POST" && parts[0] === "shots" && parts[2] === "place") {
+  // The mainline, for any number of shots at once: place, unplace, or the whole order.
+  if (method === "POST" && parts[0] === "shots" && (parts[1] === "place" || parts[1] === "unplace") && parts.length === 2) {
     const body = await readJson(req)
+    const ids = shotIdList(body.shotIds)
+    if (parts[1] === "unplace") return send(res, 200, studio.unplace(ids))
     const pick = (k: string) => (body[k] == null ? undefined : Number(body[k]))
-    return send(res, 200, studio.place(Number(parts[1]), { before: pick("before"), after: pick("after"), at: pick("at") }))
+    return send(res, 200, studio.place(ids, { before: pick("before"), after: pick("after"), at: pick("at") }))
   }
-  if (method === "POST" && parts[0] === "shots" && parts[2] === "unplace") return send(res, 200, studio.unplace(Number(parts[1])))
+  if (method === "POST" && parts[0] === "projects" && parts[2] === "order" && parts.length === 3) {
+    const body = await readJson(req)
+    if (!Array.isArray(body.shotIds)) throw new Error("需要 shotIds")
+    return send(res, 200, studio.order(parts[1], body.shotIds.map(Number)))
+  }
 
   if (method === "POST" && parts[0] === "shots" && parts[2] === "adopt") {
     const body = await readJson(req)

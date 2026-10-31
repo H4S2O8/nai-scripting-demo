@@ -249,7 +249,7 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
               `第 ${result.chapter} 章${result.route ? "（番外 " + result.route + "）" : ""}${result.title ? "「" + result.title + "」" : ""}：${result.pages} 页，每页 ${result.lengths.min}–${result.lengths.max} 字`,
               result.reused > 0 ? `沿用了 ${result.reused} 页（镜头和图都还在）` : "",
               result.detached.length
-                ? `这些镜头的页文字变了，已脱页（镜头和图保留，用 novelai_shot set 的 shotId + pageId 重新挂到页上）：\n` +
+                ? `这些镜头的页文字变了，已脱页（镜头和图保留，用 novelai_shot set 的 shots:[{shotId, pageId}] 重新挂到页上）：\n` +
                   result.detached.map((d) => `  镜头 #${d.shotId}：${d.text}…`).join("\n")
                 : "",
             ]
@@ -292,6 +292,22 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
     },
   )
 
+  const shotSpec = z.object({
+    shotId: z.number().int().optional().describe("Edit this shot; omit to create one."),
+    pageId: z.number().int().optional().describe("Novel: the page; with shotId, re-attaches a detached shot."),
+    title: z.string().optional().describe("Gallery: what the panel is; required for a new gallery shot."),
+    prompt: z.string().optional(),
+    negative: z.string().optional(),
+    characters: z.array(caption).optional(),
+    model: z.string().optional(),
+    width: z.number().int().optional(),
+    height: z.number().int().optional(),
+    steps: z.number().int().min(1).max(50).optional(),
+    guidance: z.number().min(0).max(10).optional(),
+    sampler: z.string().optional(),
+    note: z.string().optional(),
+  })
+
   server.registerTool(
     "novelai_shot",
     {
@@ -300,43 +316,36 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
         "A shot is a place that needs a picture, holding the final prompt — sent verbatim, as with " +
         "novelai_generate_image (see novelai_guide). Every shot ends with one picked main image; " +
         "everything else drawn for it stays a candidate. In a novel each page has at most one shot " +
-        "(pass pageId). A gallery is a mainline: an ordered sequence of shots, one panel each, that " +
-        "is what gets published; a shot can also sit off the mainline (character sheet, discarded " +
+        "(pageId). A gallery is a mainline: an ordered sequence of shots, one panel each, that is " +
+        "what gets published; a shot can also sit off the mainline (character sheet, discarded " +
         "take). Redrawing the same panel — another seed, another style — means drawing more " +
-        "candidates for that shot, not a new shot. Actions: set (create, or change the fields you " +
-        "pass; a new gallery shot is appended to the mainline, or placed by before/after/at, or kept " +
-        "off it with offLine; shotId + pageId re-attaches a detached shot); get (full spec plus " +
-        "every candidate with its verdict); list (a project's shots, a gallery's in mainline order, " +
-        "optionally by status); place (shotId: insert onto the mainline before or after another " +
-        "shot, at a 1-based position, or with none of these append; a shot already on it moves); " +
-        "unplace (shotId: take it off the mainline, keeping its images); merge (shotId + shotIds: " +
-        "fold those duplicate shots into this one, their images becoming its candidates, then " +
-        "delete them); adopt (shotId + imageIds: make images already in the library — e.g. drawn " +
-        "with novelai_generate_image — candidates of this shot. Images in another shot or archived " +
-        "are refused).",
+        "candidates for that shot, not a new shot. Every action takes any number of shots, one " +
+        "included, and applies all or nothing. Actions: set (shots: create, or change the fields " +
+        "you pass on those with a shotId; new gallery shots are appended to the mainline in the " +
+        "order given — or before/after/at puts all of them there as one block, or offLine keeps " +
+        "them off it); get (shotIds: full spec plus every candidate with its verdict); list (a " +
+        "project's shots, a gallery's in mainline order, optionally by status); order (project + " +
+        "shotIds: the whole mainline, exactly these in this order; the rest go off it); place " +
+        "(shotIds: insert them as one block before or after another shot, at a 1-based position, " +
+        "or with none of these at the end; shots already on the mainline move); unplace (shotIds: " +
+        "take them off the mainline, keeping their images); merge (shotId + shotIds: fold those " +
+        "duplicate shots into this one, their images becoming its candidates, then delete them); " +
+        "adopt (shotId + imageIds: make images already in the library — e.g. drawn with " +
+        "novelai_generate_image — candidates of this shot. Images in another shot or archived are " +
+        "refused).",
       inputSchema: {
-        action: z.enum(["set", "get", "list", "place", "unplace", "merge", "adopt"]),
-        project: z.string().optional().describe("set and list."),
-        shotId: z.number().int().optional(),
-        shotIds: z.array(z.number().int()).max(20).optional().describe("get; merge: the shots to fold in."),
+        action: z.enum(["set", "get", "list", "order", "place", "unplace", "merge", "adopt"]),
+        project: z.string().optional().describe("set, list and order."),
+        shots: z.array(shotSpec).min(1).max(50).optional().describe("set: the shots, in order."),
+        shotIds: z.array(z.number().int()).min(1).max(200).optional()
+          .describe("get, place, unplace; order: the whole mainline; merge: the shots to fold in."),
+        shotId: z.number().int().optional().describe("merge and adopt: the shot that receives."),
         before: z.number().int().optional().describe("set/place: a shot id on the mainline to go before."),
         after: z.number().int().optional().describe("set/place: a shot id on the mainline to go after."),
         at: z.number().int().min(1).optional().describe("set/place: 1-based mainline position."),
-        offLine: z.boolean().optional().describe("set: keep a new gallery shot off the mainline."),
+        offLine: z.boolean().optional().describe("set: keep these gallery shots off the mainline."),
         imageIds: z.array(z.number().int()).min(1).max(50).optional().describe("adopt: library image ids."),
-        pageId: z.number().int().optional(),
-        status: z.enum(["shot", "draw", "pick", "done"]).optional(),
-        title: z.string().optional(),
-        prompt: z.string().optional(),
-        negative: z.string().optional(),
-        characters: z.array(caption).optional(),
-        model: z.string().optional(),
-        width: z.number().int().optional(),
-        height: z.number().int().optional(),
-        steps: z.number().int().min(1).max(50).optional(),
-        guidance: z.number().min(0).max(10).optional(),
-        sampler: z.string().optional(),
-        note: z.string().optional(),
+        status: z.enum(["shot", "draw", "pick", "done"]).optional().describe("list."),
       },
     },
     async (args) => {
@@ -348,28 +357,33 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
           return text(shots.length ? shots.map(shotLine).join("\n") : "没有符合条件的镜头。")
         }
         const where = { before: args.before, after: args.after, at: args.at }
+        const placed = [args.before, args.after, args.at].some((x) => x !== undefined)
+        if (args.action === "order") {
+          if (!args.project || !args.shotIds) return text("order 要给 project 和 shotIds（整条主线，按顺序）", true)
+          s.order(args.project, args.shotIds)
+          return text("主线已重排\n" + mainline(s, args.project))
+        }
         if (args.action === "place" || args.action === "unplace") {
-          if (!args.shotId) return text(`${args.action} 要给 shotId`, true)
-          const shot = args.action === "place" ? s.place(args.shotId, where) : s.unplace(args.shotId)
-          return text((args.action === "place" ? "已放上主线" : "已移出主线") + "\n" + mainline(s, shot.project))
+          if (!args.shotIds) return text(`${args.action} 要给 shotIds`, true)
+          const shots = args.action === "place" ? s.place(args.shotIds, where) : s.unplace(args.shotIds)
+          return text((args.action === "place" ? "已放上主线" : "已移出主线") + "\n" + mainline(s, shots[0].project))
         }
         if (args.action === "merge") {
-          if (!args.shotId || !args.shotIds?.length) return text("merge 要给 shotId（留下的）和 shotIds（并进来的）", true)
+          if (!args.shotId || !args.shotIds) return text("merge 要给 shotId（留下的）和 shotIds（并进来的）", true)
           const shot = s.merge(args.shotId, args.shotIds)
           return text(`已并入镜头 #${shot.id}：${counts(shot.counts)}\n` + (shot.kind === "gallery" ? mainline(s, shot.project) : shotLine(shot)))
         }
         if (args.action === "adopt") {
-          if (!args.shotId || !args.imageIds?.length) return text("adopt 要给 shotId 和 imageIds", true)
+          if (!args.shotId || !args.imageIds) return text("adopt 要给 shotId 和 imageIds", true)
           const rows = s.adopt(args.shotId, args.imageIds)
           const shot = s.getShots([args.shotId])[0]
           return text(`已收进镜头 #${shot.id} 作为候选：\n` + rows.map(candidateLine).join("\n") + `\n现在：${counts(shot.counts)}`)
         }
         if (args.action === "get") {
-          const ids = args.shotIds ?? (args.shotId ? [args.shotId] : [])
-          if (!ids.length) return text("get 要给 shotIds", true)
+          if (!args.shotIds) return text("get 要给 shotIds", true)
           return text(
             s
-              .getShots(ids)
+              .getShots(args.shotIds)
               .map((shot) => {
                 const { counts: _, status, ...spec } = shot
                 const candidates = s.candidates(shot.id)
@@ -382,27 +396,16 @@ export function registerStudioTools(server: McpServer, deps: StudioDeps) {
               .join("\n\n"),
           )
         }
-        if (!args.project) return text("set 要给 project", true)
-        const shot = s.setShot({
-          project: args.project,
-          shotId: args.shotId,
-          pageId: args.pageId,
-          place: args.offLine ? false : [args.before, args.after, args.at].some((x) => x !== undefined) ? where : undefined,
-          spec: {
-            title: args.title,
-            prompt: args.prompt,
-            negative: args.negative,
-            characters: args.characters,
-            model: args.model,
-            width: args.width,
-            height: args.height,
-            steps: args.steps,
-            guidance: args.guidance,
-            sampler: args.sampler,
-            note: args.note,
-          },
-        })
-        return text("已保存\n" + shotLine(shot))
+        if (!args.project || !args.shots) return text("set 要给 project 和 shots", true)
+        if (args.offLine && placed) return text("offLine 和 before/after/at 不能一起给", true)
+        const shots = s.setShots(
+          args.project,
+          args.shots.map(({ shotId, pageId, ...spec }) => ({ shotId, pageId, spec })),
+          args.offLine ? false : placed ? where : undefined,
+        )
+        const out = [`已保存 ${shots.length} 个镜头`, ...shots.map(shotLine)]
+        if (shots[0].kind === "gallery") out.push(mainline(s, shots[0].project))
+        return text(out.join("\n"))
       } catch (error) {
         return fail(error)
       }

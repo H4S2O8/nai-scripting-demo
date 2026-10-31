@@ -148,7 +148,7 @@ console.log("mcp server over stdio")
   const pageList = await client.callTool({ name: "novelai_novel_text", arguments: { action: "pages", project: "Test Book" } })
   const pageId = Number((pageList.content[0].text.match(/页 #(\d+)/) ?? [])[1])
   check("its pages are listed with ids", pageId > 0, pageList.content[0].text)
-  const shotSet = await client.callTool({ name: "novelai_shot", arguments: { action: "set", project: "Test Book", pageId, prompt: "rain, night" } })
+  const shotSet = await client.callTool({ name: "novelai_shot", arguments: { action: "set", project: "Test Book", shots: [{ pageId, prompt: "rain, night" }] } })
   const shotId = Number((shotSet.content[0].text.match(/镜头 #(\d+)/) ?? [])[1])
   check("a shot can be set on a page", shotId > 0 && /待抽卡/.test(shotSet.content[0].text), shotSet.content[0].text)
   const drawNoToken = await client.callTool({ name: "novelai_draw", arguments: { shotId, count: 1 } })
@@ -159,17 +159,25 @@ console.log("mcp server over stdio")
   check("shots can adopt library images", shotTool.inputSchema.properties.action.enum.includes("adopt") && shotTool.inputSchema.properties.imageIds != null)
   {
     await client.callTool({ name: "novelai_project", arguments: { action: "create", name: "Test Comic", kind: "gallery" } })
-    const set = async (title, extra = {}) => Number(((await client.callTool({ name: "novelai_shot", arguments: { action: "set", project: "Test Comic", title, ...extra } })).content[0].text.match(/镜头 #(\d+)/) ?? [])[1])
-    const a = await set("A"), c = await set("C")
-    const b = await set("B", { before: c })
-    await set("sheet", { offLine: true })
-    const listed = (await client.callTool({ name: "novelai_shot", arguments: { action: "list", project: "Test Comic" } })).content[0].text
+    const shot = (name, args) => client.callTool({ name: "novelai_shot", arguments: { action: name, ...args } })
+    const ids = (r) => [...r.content[0].text.matchAll(/^(?:第 \d+ 格|主线外) · 镜头 #(\d+)/gm)].map((m) => Number(m[1]))
+    const [a, c] = ids(await shot("set", { project: "Test Comic", shots: [{ title: "A" }, { title: "C" }] }))
+    const [b] = ids(await shot("set", { project: "Test Comic", shots: [{ title: "B" }], before: c }))
+    const [s1, s2] = ids(await shot("set", { project: "Test Comic", shots: [{ title: "sheet" }, { title: "old" }], offLine: true }))
+    check("set takes several shots", a > 0 && c > 0 && s1 > 0 && s2 > 0)
+    const listed = (await shot("list", { project: "Test Comic" })).content[0].text
     check("a gallery lists its mainline in order, then shots off it",
           /第 1 格 · 镜头 #\d+ · A[\s\S]*第 2 格 · 镜头 #\d+ · B[\s\S]*第 3 格 · 镜头 #\d+ · C[\s\S]*主线外 · 镜头 #\d+ · sheet/.test(listed), listed)
-    const moved = (await client.callTool({ name: "novelai_shot", arguments: { action: "place", shotId: a, after: c } })).content[0].text
-    check("place moves a shot and shows the mainline", new RegExp(`1\\. #${b} B[\\s\\S]*2\\. #${c} C[\\s\\S]*3\\. #${a} A`).test(moved), moved)
-    const merged = await client.callTool({ name: "novelai_shot", arguments: { action: "merge", shotId: b, shotIds: [a] } })
-    check("merge folds a shot in", /已并入镜头/.test(merged.content[0].text) && /主线 2 格/.test(merged.content[0].text), merged.content[0].text)
+    const moved = (await shot("place", { shotIds: [c, a], at: 1 })).content[0].text
+    check("place moves several as a block", new RegExp(`1\\. #${c} C[\\s\\S]*2\\. #${a} A[\\s\\S]*3\\. #${b} B`).test(moved), moved)
+    const ordered = (await shot("order", { project: "Test Comic", shotIds: [s1, b] })).content[0].text
+    check("order rewrites the mainline", /主线 2 格/.test(ordered) && new RegExp(`1\\. #${s1} sheet[\\s\\S]*2\\. #${b} B`).test(ordered), ordered)
+    const off = (await shot("unplace", { shotIds: [s1, b] })).content[0].text
+    check("unplace takes several", /主线 0 格/.test(off), off)
+    const merged = await shot("merge", { shotId: a, shotIds: [c, s2] })
+    check("merge folds shots in", /已并入镜头/.test(merged.content[0].text) && /主线外 3 个/.test(merged.content[0].text), merged.content[0].text)
+    const got = (await shot("get", { shotIds: [a, b] })).content[0].text
+    check("get takes several", got.includes(`镜头 #${a}`) && got.includes(`镜头 #${b}`))
   }
   check("draws can take exact seeds", tools.find((t) => t.name === "novelai_draw").inputSchema.properties.seeds != null)
   const unknownArg = await client.callTool({ name: "novelai_library_update", arguments: { ids: [1], shotId: 13 } }).catch((e) => ({ isError: true, content: [{ text: String(e.message ?? e) }] }))

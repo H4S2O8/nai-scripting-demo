@@ -500,9 +500,9 @@ function Shot({ name, id }: { name: string; id: number }) {
   if (error) return <><Bar title="镜头" back={href("p", name)} /><div class="wrap"><p class="muted">{error}</p></div></>
   if (!detail) return <Bar title="镜头" back={href("p", name)} />
   const s = detail.shot
-  const move = async (path: string, body: unknown, done: string) => {
+  const move = async (path: string, body: object, done: string) => {
     try {
-      await call(`/api/shots/${s.id}/${path}`, body)
+      await call(`/api/shots/${path}`, { shotIds: [s.id], ...body })
       showToast(done)
       reload()
     } catch (e: any) {

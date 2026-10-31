@@ -589,65 +589,84 @@ export class Studio {
    * edits that shot — and with pageId, moves a detached shot onto a page.
    */
   setShot(input: { project: string; shotId?: number; pageId?: number; place?: Place | false; spec: ShotSpec }): Shot {
+    return this.setShots(input.project, [input], input.place)[0]
+  }
+
+  /**
+   * Several shots at once, all or nothing, in the order given. New gallery
+   * shots are appended in that order; `place` puts all of them, new or edited,
+   * on the mainline as one block in that order (or `false`: off it).
+   */
+  setShots(project: string, items: { shotId?: number; pageId?: number; spec: ShotSpec }[], place?: Place | false): Shot[] {
     return this.db.transaction(() => {
-      const row = this.projectRow(input.project)
-      const spec = input.spec
-      if (spec.characters) {
-        for (const c of spec.characters) {
-          if (!c.prompt?.trim()) throw new Error("角色 caption 的 prompt 不能为空")
-          if ((c.x == null) !== (c.y == null)) throw new Error("角色坐标 x、y 要么都给，要么都不给")
-        }
+      if (items.length === 0) throw new Error("至少要给一个镜头")
+      const row = this.projectRow(project)
+      if (place !== undefined && row.kind !== "gallery") throw new Error("只有图集有主线，小说的镜头跟着页走")
+      const ids = items.map((item) => this.writeShot(row, item))
+      if (new Set(ids).size !== ids.length) throw new Error("同一个镜头在这次里出现了不止一次")
+      if (place === false) this.unplace(ids)
+      else if (place) this.place(ids, place)
+      else if (row.kind === "gallery") {
+        const created = ids.filter((_, i) => items[i].shotId === undefined)
+        if (created.length) this.place(created, {})
       }
-      if (input.place !== undefined && row.kind !== "gallery") throw new Error("只有图集有主线，小说的镜头跟着页走")
-      let shotId = input.shotId
-      if (input.pageId !== undefined) {
-        if (row.kind !== "novel") throw new Error("图集项目的镜头不挂在页上")
-        const page = this.db
-          .prepare("SELECT p.id FROM pages p JOIN chapters c ON c.id = p.chapter_id WHERE p.id = ? AND c.project_id = ?")
-          .get(input.pageId, row.id)
-        if (!page) throw new Error(`「${row.name}」里没有 id 为 ${input.pageId} 的页`)
-        const onPage = this.db.prepare("SELECT id FROM shots WHERE page_id = ?").get(input.pageId) as { id: number } | undefined
-        if (onPage && shotId !== undefined && onPage.id !== shotId) {
-          throw new Error(`第 ${input.pageId} 页已经有镜头 #${onPage.id}；一页只能有一个镜头`)
-        }
-        if (onPage && shotId === undefined) shotId = onPage.id
-      } else if (shotId === undefined && row.kind === "novel") {
-        throw new Error("小说的镜头要指定 pageId（或用 shotId 改已有镜头）")
-      }
-      if (shotId === undefined) {
-        if (row.kind === "gallery" && !spec.title?.trim()) throw new Error("图集镜头要有 title，说明这是什么构思")
-        shotId = Number(
-          this.db
-            .prepare("INSERT INTO shots (project_id, page_id, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .run(row.id, input.pageId ?? null, now(), now()).lastInsertRowid,
-        )
-      } else {
-        const own = this.db.prepare("SELECT project_id FROM shots WHERE id = ?").get(shotId) as { project_id: number } | undefined
-        if (!own) throw new Error(`没有 id 为 ${shotId} 的镜头`)
-        if (own.project_id !== row.id) throw new Error(`镜头 #${shotId} 不属于「${row.name}」`)
-        if (input.pageId !== undefined) this.db.prepare("UPDATE shots SET page_id = ? WHERE id = ?").run(input.pageId, shotId)
-      }
-      const fields: [string, unknown][] = [
-        ["title", spec.title?.trim()],
-        ["prompt", spec.prompt],
-        ["negative", spec.negative],
-        ["characters", spec.characters ? JSON.stringify(spec.characters) : undefined],
-        ["model", spec.model],
-        ["width", spec.width],
-        ["height", spec.height],
-        ["steps", spec.steps],
-        ["guidance", spec.guidance],
-        ["sampler", spec.sampler],
-        ["note", spec.note],
-      ]
-      for (const [column, value] of fields) {
-        if (value !== undefined) this.db.prepare(`UPDATE shots SET ${column} = ?, updated_at = ? WHERE id = ?`).run(value, now(), shotId)
-      }
-      const created = input.shotId === undefined
-      if (input.place === false) this.unplace(shotId)
-      else if (input.place || (created && row.kind === "gallery")) this.place(shotId, input.place ?? {})
-      return this.getShots([shotId])[0]
+      return this.getShots(ids)
     })()
+  }
+
+  private writeShot(row: ReturnType<Studio["projectRow"]>, input: { shotId?: number; pageId?: number; spec: ShotSpec }): number {
+    const spec = input.spec
+    if (spec.characters) {
+      for (const c of spec.characters) {
+        if (!c.prompt?.trim()) throw new Error("角色 caption 的 prompt 不能为空")
+        if ((c.x == null) !== (c.y == null)) throw new Error("角色坐标 x、y 要么都给，要么都不给")
+      }
+    }
+    let shotId = input.shotId
+    if (input.pageId !== undefined) {
+      if (row.kind !== "novel") throw new Error("图集项目的镜头不挂在页上")
+      const page = this.db
+        .prepare("SELECT p.id FROM pages p JOIN chapters c ON c.id = p.chapter_id WHERE p.id = ? AND c.project_id = ?")
+        .get(input.pageId, row.id)
+      if (!page) throw new Error(`「${row.name}」里没有 id 为 ${input.pageId} 的页`)
+      const onPage = this.db.prepare("SELECT id FROM shots WHERE page_id = ?").get(input.pageId) as { id: number } | undefined
+      if (onPage && shotId !== undefined && onPage.id !== shotId) {
+        throw new Error(`第 ${input.pageId} 页已经有镜头 #${onPage.id}；一页只能有一个镜头`)
+      }
+      if (onPage && shotId === undefined) shotId = onPage.id
+    } else if (shotId === undefined && row.kind === "novel") {
+      throw new Error("小说的镜头要指定 pageId（或用 shotId 改已有镜头）")
+    }
+    if (shotId === undefined) {
+      if (row.kind === "gallery" && !spec.title?.trim()) throw new Error("图集镜头要有 title，说明这是什么构思")
+      shotId = Number(
+        this.db
+          .prepare("INSERT INTO shots (project_id, page_id, created_at, updated_at) VALUES (?, ?, ?, ?)")
+          .run(row.id, input.pageId ?? null, now(), now()).lastInsertRowid,
+      )
+    } else {
+      const own = this.db.prepare("SELECT project_id FROM shots WHERE id = ?").get(shotId) as { project_id: number } | undefined
+      if (!own) throw new Error(`没有 id 为 ${shotId} 的镜头`)
+      if (own.project_id !== row.id) throw new Error(`镜头 #${shotId} 不属于「${row.name}」`)
+      if (input.pageId !== undefined) this.db.prepare("UPDATE shots SET page_id = ? WHERE id = ?").run(input.pageId, shotId)
+    }
+    const fields: [string, unknown][] = [
+      ["title", spec.title?.trim()],
+      ["prompt", spec.prompt],
+      ["negative", spec.negative],
+      ["characters", spec.characters ? JSON.stringify(spec.characters) : undefined],
+      ["model", spec.model],
+      ["width", spec.width],
+      ["height", spec.height],
+      ["steps", spec.steps],
+      ["guidance", spec.guidance],
+      ["sampler", spec.sampler],
+      ["note", spec.note],
+    ]
+    for (const [column, value] of fields) {
+      if (value !== undefined) this.db.prepare(`UPDATE shots SET ${column} = ?, updated_at = ? WHERE id = ?`).run(value, now(), shotId)
+    }
+    return shotId
   }
 
   /* ------------------------------------------------------------ mainline */
@@ -664,28 +683,35 @@ export class Studio {
     order.forEach((id, i) => set.run(i + 1, id))
   }
 
-  private galleryShot(shotId: number) {
-    const shot = this.getShots([shotId])[0]
-    const row = this.projectRow(shot.project)
-    if (row.kind !== "gallery") throw new Error(`镜头 #${shotId} 属于小说「${row.name}」；只有图集有主线`)
-    return { shot, row }
+  /** These gallery shots and their project; all must be in the same one. */
+  private galleryShots(shotIds: number[]) {
+    if (shotIds.length === 0) throw new Error("至少要给一个镜头")
+    if (new Set(shotIds).size !== shotIds.length) throw new Error("镜头 id 有重复")
+    const shots = this.getShots(shotIds)
+    const row = this.projectRow(shots[0].project)
+    if (row.kind !== "gallery") throw new Error(`镜头 #${shots[0].id} 属于小说「${row.name}」；只有图集有主线`)
+    const stray = shots.find((s) => s.project !== row.name)
+    if (stray) throw new Error(`镜头 #${stray.id} 属于「${stray.project}」，不是「${row.name}」`)
+    return { shots, row }
   }
 
   /**
-   * Put a gallery shot on the mainline: before or after another shot on it,
-   * at a position (1 is the first; past the end appends), or with none of
-   * these at the end. A shot already on the mainline moves.
+   * Put gallery shots on the mainline as one block, in the order given: before
+   * or after another shot on it, at a position (1 is the first; past the end
+   * appends), or with none of these at the end. Shots already on the mainline
+   * move.
    */
-  place(shotId: number, where: Place = {}): Shot {
+  place(shotIds: number | number[], where: Place = {}): Shot[] {
+    const ids = [shotIds].flat()
     return this.db.transaction(() => {
-      const { row } = this.galleryShot(shotId)
+      const { row } = this.galleryShots(ids)
       const given = [where.before, where.after, where.at].filter((x) => x !== undefined).length
       if (given > 1) throw new Error("before、after、at 只能给一个")
-      const order = this.line(row.id).filter((id) => id !== shotId)
+      const order = this.line(row.id).filter((id) => !ids.includes(id))
       let index = order.length
       const anchor = where.before ?? where.after
       if (anchor !== undefined) {
-        if (anchor === shotId) throw new Error("不能以镜头自己为参照")
+        if (ids.includes(anchor)) throw new Error("参照的镜头不能是正在挪的镜头")
         const at = order.indexOf(anchor)
         if (at < 0) throw new Error(`镜头 #${anchor} 不在「${row.name}」的主线上`)
         index = where.before !== undefined ? at : at + 1
@@ -693,18 +719,33 @@ export class Studio {
         if (!Number.isInteger(where.at) || where.at < 1) throw new Error("at 是从 1 开始的位置")
         index = Math.min(where.at - 1, order.length)
       }
-      order.splice(index, 0, shotId)
+      order.splice(index, 0, ...ids)
       this.renumber(row.id, order)
-      return this.getShots([shotId])[0]
+      return this.getShots(ids)
     })()
   }
 
-  /** Take a gallery shot off the mainline; it keeps its images and can go back on later. */
-  unplace(shotId: number): Shot {
+  /** Take gallery shots off the mainline; they keep their images and can go back on later. */
+  unplace(shotIds: number | number[]): Shot[] {
+    const ids = [shotIds].flat()
     return this.db.transaction(() => {
-      const { row } = this.galleryShot(shotId)
-      this.renumber(row.id, this.line(row.id).filter((id) => id !== shotId))
-      return this.getShots([shotId])[0]
+      const { row } = this.galleryShots(ids)
+      this.renumber(row.id, this.line(row.id).filter((id) => !ids.includes(id)))
+      return this.getShots(ids)
+    })()
+  }
+
+  /** Rewrite the whole mainline: exactly these shots, in this order; the project's other shots go off it. */
+  order(project: string, shotIds: number[]): Shot[] {
+    return this.db.transaction(() => {
+      const row = this.projectRow(project)
+      if (row.kind !== "gallery") throw new Error("只有图集有主线，小说的镜头跟着页走")
+      if (shotIds.length) {
+        const { row: own } = this.galleryShots(shotIds)
+        if (own.id !== row.id) throw new Error(`镜头 #${shotIds[0]} 不属于「${row.name}」`)
+      }
+      this.renumber(row.id, shotIds)
+      return this.listShots(row.name)
     })()
   }
 

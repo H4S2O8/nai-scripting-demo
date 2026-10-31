@@ -279,7 +279,8 @@ NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
 项目里还有画风（说明和每次要带上的提示词片段，**不会自动拼进提示词**）、角色设定卡（外貌 tag、
 各套服装）、排版设置，以及谁来选图：`human`（默认，agent 只能标推荐）或 `agent`。
 
-每张抽出来的图先是「候选」，再被选中（小说镜头只能选一张，选新的旧的退回候选）或淘汰。
+每张抽出来的图先是「候选」，再被选中（每个镜头只有一张主图，选新的旧的退回候选）或淘汰。
+图集是一条「主线」：有序的镜头，每个镜头一格，发布时按顺序每格出一张主图；主线外的镜头（定妆图、废案）保留但不发布。
 镜头的状态：待写镜头 → 待抽卡 → 待选图 → 已完成。重切页时文字没变的页保留 id、镜头和图；
 文字变了的页上的镜头「脱页」，镜头和图都保留，等重新挂到页上。
 
@@ -287,7 +288,7 @@ NOVELAI_TOKENS=main=pst-xxx,alt=pst-yyy,spare=pst-zzz
 | --- | --- |
 | `novelai_project` | list / get / create / update：设置、角色设定卡、进度 |
 | `novelai_novel_text` | set（新增或替换一章原文并切页）/ resplit / pages / read |
-| `novelai_shot` | set（写或改镜头；`shotId + pageId` 重挂脱页镜头）/ get（含所有候选）/ list |
+| `novelai_shot` | 都可一次处理若干个镜头：set（`shots` 数组，写或改镜头；`shotId + pageId` 重挂脱页镜头；图集新镜头默认接主线末尾，`before`/`after`/`at` 整块插入，`offLine` 放主线外）/ get / list / order（整条主线按给的顺序重写）/ place（整块插入或挪动）/ unplace / merge（把重复镜头并进来）/ adopt |
 | `novelai_draw` | 按镜头存的提示词抽 N 张（每张新 seed），返回带库 id 的缩略拼图 |
 | `novelai_verdict` | favorite / unfavorite / pick / reject / reset；用户在对话里点名时带 `decidedBy: user` |
 | `novelai_review` | 待办：人的意见、待选图、待抽卡、待写镜头、脱页镜头；也可留言、resolve |
